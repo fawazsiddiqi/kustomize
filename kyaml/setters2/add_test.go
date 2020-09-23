@@ -42,7 +42,7 @@ kind: Deployment
 metadata:
   name: nginx-deployment
 spec:
-  replicas: 3 # {"$ref":"#/definitions/io.k8s.cli.setters.replicas"}
+  replicas: 3 # {"$openapi":"replicas"}
  `,
 		},
 		{
@@ -67,9 +67,9 @@ kind: Deployment
 metadata:
   name: nginx-deployment
   annotations:
-    something: 3 # {"$ref":"#/definitions/io.k8s.cli.setters.replicas"}
+    something: 3 # {"$openapi":"replicas"}
 spec:
-  replicas: 3 # {"$ref":"#/definitions/io.k8s.cli.setters.replicas"}
+  replicas: 3 # {"$openapi":"replicas"}
  `,
 		},
 		{
@@ -97,7 +97,7 @@ metadata:
   annotations:
     something: 3
 spec:
-  replicas: 3 # {"$ref":"#/definitions/io.k8s.cli.setters.replicas"}
+  replicas: 3 # {"$openapi":"replicas"}
  `,
 		},
 		{
@@ -123,9 +123,9 @@ kind: Deployment
 metadata:
   name: nginx-deployment
   annotations:
-    replicas: 3 # {"$ref":"#/definitions/io.k8s.cli.setters.replicas"}
+    replicas: 3 # {"$openapi":"replicas"}
 spec:
-  replicas: 3 # {"$ref":"#/definitions/io.k8s.cli.setters.replicas"}
+  replicas: 3 # {"$openapi":"replicas"}
  `,
 		},
 		{
@@ -153,7 +153,41 @@ metadata:
   annotations:
     replicas: 3
 spec:
-  replicas: 3 # {"$ref":"#/definitions/io.k8s.cli.setters.replicas"}
+  replicas: 3 # {"$openapi":"replicas"}
+ `,
+		},
+		{
+			name: "add-field-inside-sequence",
+			add: Add{
+				FieldValue: "/usr/share/nginx",
+				FieldName:  "spec.containers.volumeMounts.mountPath",
+				Ref:        "#/definitions/io.k8s.cli.setters.mountPath",
+			},
+			input: `
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nginx-deployment
+spec:
+  containers:
+  - name: nginx
+    image: nginx
+    volumeMounts:
+    - name: nginx
+      mountPath: /usr/share/nginx
+ `,
+			expected: `
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nginx-deployment
+spec:
+  containers:
+  - name: nginx
+    image: nginx
+    volumeMounts:
+    - name: nginx
+      mountPath: /usr/share/nginx # {"$openapi":"mountPath"}
  `,
 		},
 		{
@@ -169,6 +203,29 @@ metadata:
   name: nginx-deployment
 spec:
   replicas: 3
+ `,
+		},
+		{
+			name: "ref has . in name of setter",
+			add: Add{
+				FieldValue: "3",
+				Ref:        "#/definitions/io.k8s.cli.setters.foo.bar",
+			},
+			input: `
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nginx-deployment
+spec:
+  replicas: 3
+ `,
+			expected: `
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nginx-deployment
+spec:
+  replicas: 3 # {"$openapi":"foo.bar"}
  `,
 		},
 	}

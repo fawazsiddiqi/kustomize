@@ -115,7 +115,9 @@ func (r *ByteReader) Read() ([]*yaml.RNode, error) {
 	if err != nil {
 		return nil, errors.Wrap(err)
 	}
-	values := strings.Split(input.String(), "\n---\n")
+
+	// replace the ending \r\n (line ending used in windows) with \n and then separate by \n---\n
+	values := strings.Split(strings.Replace(input.String(), "\r\n", "\n", -1), "\n---\n")
 
 	index := 0
 	for i := range values {
@@ -174,12 +176,6 @@ func (r *ByteReader) Read() ([]*yaml.RNode, error) {
 	return output, nil
 }
 
-func isEmptyDocument(node *yaml.Node) bool {
-	// node is a Document with no content -- e.g. "---\n---"
-	return node.Kind == yaml.DocumentNode &&
-		node.Content[0].Tag == yaml.NullNodeTag
-}
-
 func (r *ByteReader) decode(index int, decoder *yaml.Decoder) (*yaml.RNode, error) {
 	node := &yaml.Node{}
 	err := decoder.Decode(node)
@@ -190,7 +186,7 @@ func (r *ByteReader) decode(index int, decoder *yaml.Decoder) (*yaml.RNode, erro
 		return nil, errors.Wrap(err)
 	}
 
-	if isEmptyDocument(node) {
+	if yaml.IsYNodeEmptyDoc(node) {
 		return nil, nil
 	}
 

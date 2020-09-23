@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"sigs.k8s.io/kustomize/kyaml/testutil"
 )
 
 const (
@@ -180,6 +181,51 @@ items:
 - apiVersion: apps/v1
   kind: Deployment
   metadata:
+    name: mysql-deployment
+    namespace: myspace
+    annotations:
+      config.kubernetes.io/index: '0'
+      config.kubernetes.io/path: 'config/mysql-deployment_deployment.yaml'
+  spec:
+    replicas: 3
+    template:
+      spec:
+        containers:
+        - name: mysql
+          image: mysql:1.7.9
+- apiVersion: apps/v1
+  kind: Deployment
+  metadata:
+    name: nosetters-deployment
+    namespace: myspace
+    annotations:
+      config.kubernetes.io/index: '0'
+      config.kubernetes.io/path: 'config/nosetters-deployment_deployment.yaml'
+  spec:
+    replicas: 4
+    template:
+      spec:
+        containers:
+        - name: nosetters
+          image: nosetters:1.7.7
+- apiVersion: apps/v1
+  kind: Deployment
+  metadata:
+    name: storage-deployment
+    namespace: myspace
+    annotations:
+      config.kubernetes.io/index: '0'
+      config.kubernetes.io/path: 'config/storage-deployment_deployment.yaml'
+  spec:
+    replicas: 4
+    template:
+      spec:
+        containers:
+        - name: storage
+          image: storage:1.7.7
+- apiVersion: apps/v1
+  kind: Deployment
+  metadata:
     name: test
     labels:
       name: test
@@ -231,6 +277,8 @@ items:
 )
 
 func TestCmd_wrap(t *testing.T) {
+	testutil.SkipWindows(t)
+
 	_, dir, _, ok := runtime.Caller(0)
 	if !assert.True(t, ok) {
 		t.FailNow()
@@ -253,6 +301,8 @@ func TestCmd_wrap(t *testing.T) {
 }
 
 func TestCmd_wrapNoMerge(t *testing.T) {
+	testutil.SkipWindows(t)
+
 	_, dir, _, ok := runtime.Caller(0)
 	if !assert.True(t, ok) {
 		t.FailNow()
@@ -280,6 +330,8 @@ func TestCmd_wrapNoMerge(t *testing.T) {
 }
 
 func TestCmd_wrapOverride(t *testing.T) {
+	testutil.SkipWindows(t)
+
 	_, dir, _, ok := runtime.Caller(0)
 	if !assert.True(t, ok) {
 		t.FailNow()

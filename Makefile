@@ -14,11 +14,9 @@ all: verify-kustomize
 verify-kustomize: \
 	lint-kustomize \
 	test-unit-kustomize-all \
-	test-examples-kustomize-against-HEAD
-# TODO: restore test-examples-kustomize-against-3.5.5 \
-# once it works.  Likely have to fix and release 3.6
-#	test-examples-kustomize-against-3.5.4 no longer works because
-# the examples tests features not in 3.5.4
+	test-examples-kustomize-against-HEAD \
+	test-examples-kustomize-against-3.8.0 \
+	test-examples-kustomize-against-3.8.2
 
 # The following target referenced by a file in
 # https://github.com/kubernetes/test-infra/tree/master/config/jobs/kubernetes-sigs/kustomize
@@ -26,9 +24,11 @@ verify-kustomize: \
 prow-presubmit-check: \
 	lint-kustomize \
 	test-unit-kustomize-all \
-	test-examples-kustomize-against-HEAD \
 	test-unit-cmd-all \
-	test-go-mod
+	test-go-mod \
+	test-examples-kustomize-against-HEAD \
+	test-examples-kustomize-against-3.8.0 \
+	test-examples-kustomize-against-3.8.2
 
 .PHONY: verify-kustomize-e2e
 verify-kustomize-e2e: test-examples-e2e-kustomize
@@ -43,23 +43,22 @@ verify-kustomize-e2e: test-examples-e2e-kustomize
 $(MYGOBIN)/golangci-lint-kustomize:
 	( \
 		set -e; \
-		export GOBIN=$$(mktemp -d); \
 		cd hack; \
-		GO111MODULE=on go install github.com/golangci/golangci-lint/cmd/golangci-lint; \
-		mv $$GOBIN/golangci-lint $(MYGOBIN)/golangci-lint-kustomize \
+		GO111MODULE=on go build -tags=tools -o $(MYGOBIN)/golangci-lint-kustomize github.com/golangci/golangci-lint/cmd/golangci-lint; \
 	)
 
-# Version pinned by api/go.mod
+$(MYGOBIN)/gorepomod:
+	cd api; \
+	go install github.com/monopole/gorepomod
+
 $(MYGOBIN)/mdrip:
 	cd api; \
 	go install github.com/monopole/mdrip
 
-# Version pinned by api/go.mod
 $(MYGOBIN)/stringer:
 	cd api; \
 	go install golang.org/x/tools/cmd/stringer
 
-# Version pinned by api/go.mod
 $(MYGOBIN)/goimports:
 	cd api; \
 	go install golang.org/x/tools/cmd/goimports
@@ -85,6 +84,8 @@ $(MYGOBIN)/kustomize:
 install-tools: \
 	$(MYGOBIN)/goimports \
 	$(MYGOBIN)/golangci-lint-kustomize \
+	$(MYGOBIN)/gh \
+	$(MYGOBIN)/gorepomod \
 	$(MYGOBIN)/mdrip \
 	$(MYGOBIN)/pluginator \
 	$(MYGOBIN)/stringer
@@ -200,7 +201,7 @@ build-kustomize-api: $(builtinplugins)
 
 .PHONY: test-unit-kustomize-api
 test-unit-kustomize-api: build-kustomize-api
-	cd api; go test ./...
+	cd api; go test ./...  -ldflags "-X sigs.k8s.io/kustomize/api/provenance.version=v444.333.222"
 
 .PHONY: test-unit-kustomize-plugins
 test-unit-kustomize-plugins:
@@ -237,10 +238,10 @@ test-examples-kustomize-against-HEAD: $(MYGOBIN)/kustomize $(MYGOBIN)/mdrip
 	./hack/testExamplesAgainstKustomize.sh HEAD
 
 .PHONY:
-test-examples-kustomize-against-3.5.4: $(MYGOBIN)/mdrip
+test-examples-kustomize-against-3.8.0: $(MYGOBIN)/mdrip
 	( \
 		set -e; \
-		tag=v3.5.4; \
+		tag=v3.8.0; \
 		/bin/rm -f $(MYGOBIN)/kustomize; \
 		echo "Installing kustomize $$tag."; \
 		GO111MODULE=on go get sigs.k8s.io/kustomize/kustomize/v3@$${tag}; \
@@ -250,10 +251,10 @@ test-examples-kustomize-against-3.5.4: $(MYGOBIN)/mdrip
 	)
 
 .PHONY:
-test-examples-kustomize-against-3.5.5: $(MYGOBIN)/mdrip
+test-examples-kustomize-against-3.8.2: $(MYGOBIN)/mdrip
 	( \
 		set -e; \
-		tag=v3.5.5; \
+		tag=v3.8.2; \
 		/bin/rm -f $(MYGOBIN)/kustomize; \
 		echo "Installing kustomize $$tag."; \
 		GO111MODULE=on go get sigs.k8s.io/kustomize/kustomize/v3@$${tag}; \
@@ -261,7 +262,6 @@ test-examples-kustomize-against-3.5.5: $(MYGOBIN)/mdrip
 		echo "Reinstalling kustomize from HEAD."; \
 		cd kustomize; go install .; \
 	)
-
 
 # linux only.
 # This is for testing an example plugin that
@@ -320,6 +320,18 @@ $(MYGOBIN)/kind:
         chmod +x ./kind; \
         mv ./kind $(MYGOBIN); \
         rm -rf $$d; \
+	)
+
+# linux only.
+$(MYGOBIN)/gh:
+	( \
+		set -e; \
+		d=$(shell mktemp -d); cd $$d; \
+		tgzFile=gh_1.0.0_linux_amd64.tar.gz; \
+		wget https://github.com/cli/cli/releases/download/v1.0.0/$$tgzFile; \
+		tar -xvzf $$tgzFile; \
+		mv gh_1.0.0_linux_amd64/bin/gh  $(MYGOBIN)/gh; \
+		rm -rf $$d \
 	)
 
 .PHONY: clean

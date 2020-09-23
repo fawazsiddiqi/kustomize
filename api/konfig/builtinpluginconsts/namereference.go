@@ -21,6 +21,11 @@ nameReference:
   - path: spec/scaleTargetRef/name
     kind: HorizontalPodAutoscaler
 
+- kind: StatefulSet
+  fieldSpecs:
+  - path: spec/scaleTargetRef/name
+    kind: HorizontalPodAutoscaler
+
 - kind: ConfigMap
   version: v1
   fieldSpecs:
@@ -247,6 +252,10 @@ nameReference:
     kind: Role
   - path: rules/resourceNames
     kind: ClusterRole
+  - path: spec/template/spec/containers/env/valueFrom/secretKeyRef/name
+    kind: Service
+    group: serving.knative.dev
+    version: v1
 
 - kind: Service
   version: v1

@@ -10,10 +10,186 @@ import (
 	kusttest_test "sigs.k8s.io/kustomize/api/testutils/kusttest"
 )
 
+func TestSimpleMultiplePatches(t *testing.T) {
+	th := kusttest_test.MakeHarness(t)
+	th.WriteK("base", `
+namePrefix: b-
+commonLabels:
+  team: foo
+resources:
+- deployment.yaml
+- service.yaml
+configMapGenerator:
+- name: configmap-in-base
+  literals:
+  - foo=bar
+`)
+	th.WriteF("base/deployment.yaml", `
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nginx
+spec:
+  template:
+    spec:
+      containers:
+      - name: nginx
+        image: nginx
+        volumeMounts:
+        - name: nginx-persistent-storage
+          mountPath: /tmp/ps
+      - name: sidecar
+        image: sidecar:latest
+      volumes:
+      - name: nginx-persistent-storage
+        emptyDir: {}
+      - configMap:
+          name: configmap-in-base
+        name: configmap-in-base
+`)
+	th.WriteF("base/service.yaml", `
+apiVersion: v1
+kind: Service
+metadata:
+  name: nginx
+spec:
+  ports:
+  - port: 80
+`)
+	th.WriteK("overlay", `
+namePrefix: a-
+commonLabels:
+  env: staging
+patchesStrategicMerge:
+- deployment-patch1.yaml
+- deployment-patch2.yaml
+resources:
+- ../base
+configMapGenerator:
+- name: configmap-in-overlay
+  literals:
+  - hello=world
+`)
+	th.WriteF("overlay/deployment-patch1.yaml", `
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nginx
+spec:
+  template:
+    spec:
+      containers:
+      - name: nginx
+        image: nginx:latest
+        env:
+        - name: ENVKEY
+          value: ENVVALUE
+      volumes:
+      - name: nginx-persistent-storage
+        emptyDir: null
+        gcePersistentDisk:
+          pdName: nginx-persistent-storage
+      - configMap:
+          name: configmap-in-overlay
+        name: configmap-in-overlay
+`)
+	th.WriteF("overlay/deployment-patch2.yaml", `
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nginx
+spec:
+  template:
+    spec:
+      containers:
+      - name: nginx
+        env:
+        - name: ANOTHERENV
+          value: FOO
+      volumes:
+      - name: nginx-persistent-storage
+`)
+	m := th.Run("overlay", th.MakeDefaultOptions())
+	th.AssertActualEqualsExpected(m, `
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    env: staging
+    team: foo
+  name: a-b-nginx
+spec:
+  selector:
+    matchLabels:
+      env: staging
+      team: foo
+  template:
+    metadata:
+      labels:
+        env: staging
+        team: foo
+    spec:
+      containers:
+      - env:
+        - name: ANOTHERENV
+          value: FOO
+        - name: ENVKEY
+          value: ENVVALUE
+        image: nginx:latest
+        name: nginx
+        volumeMounts:
+        - mountPath: /tmp/ps
+          name: nginx-persistent-storage
+      - image: sidecar:latest
+        name: sidecar
+      volumes:
+      - gcePersistentDisk:
+          pdName: nginx-persistent-storage
+        name: nginx-persistent-storage
+      - configMap:
+          name: a-b-configmap-in-base-798k5k7g9f
+        name: configmap-in-base
+      - configMap:
+          name: a-configmap-in-overlay-dc6fm46dhm
+        name: configmap-in-overlay
+---
+apiVersion: v1
+kind: Service
+metadata:
+  labels:
+    env: staging
+    team: foo
+  name: a-b-nginx
+spec:
+  ports:
+  - port: 80
+  selector:
+    env: staging
+    team: foo
+---
+apiVersion: v1
+data:
+  foo: bar
+kind: ConfigMap
+metadata:
+  labels:
+    env: staging
+    team: foo
+  name: a-b-configmap-in-base-798k5k7g9f
+---
+apiVersion: v1
+data:
+  hello: world
+kind: ConfigMap
+metadata:
+  labels:
+    env: staging
+  name: a-configmap-in-overlay-dc6fm46dhm
+`)
+}
+
 func makeCommonFileForMultiplePatchTest(th kusttest_test.Harness) {
 	th.WriteK("/app/base", `
-apiVersion: kustomize.config.k8s.io/v1beta1
-kind: Kustomization
 namePrefix: team-foo-
 commonLabels:
   app: mynginx
@@ -30,7 +206,7 @@ configMapGenerator:
   - foo=bar
 `)
 	th.WriteF("/app/base/deployment.yaml", `
-apiVersion: apps/v1beta2
+apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: nginx
@@ -71,8 +247,6 @@ spec:
     app: nginx
 `)
 	th.WriteK("/app/overlay/staging", `
-apiVersion: kustomize.config.k8s.io/v1beta1
-kind: Kustomization
 namePrefix: staging-
 commonLabels:
   env: staging
@@ -92,7 +266,7 @@ func TestMultiplePatchesNoConflict(t *testing.T) {
 	th := kusttest_test.MakeHarness(t)
 	makeCommonFileForMultiplePatchTest(th)
 	th.WriteF("/app/overlay/staging/deployment-patch1.yaml", `
-apiVersion: apps/v1beta2
+apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: nginx
@@ -115,7 +289,7 @@ spec:
         name: configmap-in-overlay
 `)
 	th.WriteF("/app/overlay/staging/deployment-patch2.yaml", `
-apiVersion: apps/v1beta2
+apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: nginx
@@ -132,7 +306,7 @@ spec:
 `)
 	m := th.Run("/app/overlay/staging", th.MakeDefaultOptions())
 	th.AssertActualEqualsExpected(m, `
-apiVersion: apps/v1beta2
+apiVersion: apps/v1
 kind: Deployment
 metadata:
   annotations:
@@ -178,11 +352,11 @@ spec:
           pdName: nginx-persistent-storage
         name: nginx-persistent-storage
       - configMap:
-          name: staging-configmap-in-overlay-k7cbc75tg8
-        name: configmap-in-overlay
-      - configMap:
-          name: staging-team-foo-configmap-in-base-g7k6gt2889
+          name: staging-team-foo-configmap-in-base-798k5k7g9f
         name: configmap-in-base
+      - configMap:
+          name: staging-configmap-in-overlay-dc6fm46dhm
+        name: configmap-in-overlay
 ---
 apiVersion: v1
 kind: Service
@@ -216,7 +390,7 @@ metadata:
     env: staging
     org: example.com
     team: foo
-  name: staging-team-foo-configmap-in-base-g7k6gt2889
+  name: staging-team-foo-configmap-in-base-798k5k7g9f
 ---
 apiVersion: v1
 data:
@@ -225,7 +399,7 @@ kind: ConfigMap
 metadata:
   labels:
     env: staging
-  name: staging-configmap-in-overlay-k7cbc75tg8
+  name: staging-configmap-in-overlay-dc6fm46dhm
 `)
 }
 
@@ -233,7 +407,7 @@ func TestMultiplePatchesWithConflict(t *testing.T) {
 	th := kusttest_test.MakeHarness(t)
 	makeCommonFileForMultiplePatchTest(th)
 	th.WriteF("/app/overlay/staging/deployment-patch1.yaml", `
-apiVersion: apps/v1beta2
+apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: nginx
@@ -255,7 +429,7 @@ spec:
         name: configmap-in-overlay
 `)
 	th.WriteF("/app/overlay/staging/deployment-patch2.yaml", `
-apiVersion: apps/v1beta2
+apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: nginx
@@ -279,7 +453,7 @@ spec:
 }
 
 func TestMultiplePatchesWithOnePatchDeleteDirective(t *testing.T) {
-	additivePatch := `apiVersion: apps/v1beta2
+	additivePatch := `apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: nginx
@@ -292,7 +466,7 @@ spec:
         - name: SOME_NAME
           value: somevalue
 `
-	deletePatch := `apiVersion: apps/v1beta2
+	deletePatch := `apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: nginx
@@ -328,7 +502,7 @@ spec:
 			th.WriteF("/app/overlay/staging/deployment-patch1.yaml", c.patch1)
 			th.WriteF("/app/overlay/staging/deployment-patch2.yaml", c.patch2)
 			m := th.Run("/app/overlay/staging", th.MakeDefaultOptions())
-			th.AssertActualEqualsExpected(m, `apiVersion: apps/v1beta2
+			th.AssertActualEqualsExpected(m, `apiVersion: apps/v1
 kind: Deployment
 metadata:
   annotations:
@@ -369,7 +543,7 @@ spec:
       - emptyDir: {}
         name: nginx-persistent-storage
       - configMap:
-          name: staging-team-foo-configmap-in-base-g7k6gt2889
+          name: staging-team-foo-configmap-in-base-798k5k7g9f
         name: configmap-in-base
 ---
 apiVersion: v1
@@ -404,7 +578,7 @@ metadata:
     env: staging
     org: example.com
     team: foo
-  name: staging-team-foo-configmap-in-base-g7k6gt2889
+  name: staging-team-foo-configmap-in-base-798k5k7g9f
 ---
 apiVersion: v1
 data:
@@ -413,7 +587,7 @@ kind: ConfigMap
 metadata:
   labels:
     env: staging
-  name: staging-configmap-in-overlay-k7cbc75tg8
+  name: staging-configmap-in-overlay-dc6fm46dhm
 `)
 		})
 	}
@@ -423,7 +597,7 @@ func TestMultiplePatchesBothWithPatchDeleteDirective(t *testing.T) {
 	th := kusttest_test.MakeHarness(t)
 	makeCommonFileForMultiplePatchTest(th)
 	th.WriteF("/app/overlay/staging/deployment-patch1.yaml", `
-apiVersion: apps/v1beta2
+apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: nginx
@@ -435,7 +609,7 @@ spec:
         name: sidecar
 `)
 	th.WriteF("/app/overlay/staging/deployment-patch2.yaml", `
-apiVersion: apps/v1beta2
+apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: nginx

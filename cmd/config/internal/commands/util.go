@@ -5,12 +5,85 @@ package commands
 
 import (
 	"fmt"
+	"io"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/go-errors/errors"
 	"github.com/spf13/cobra"
+	"sigs.k8s.io/kustomize/cmd/config/ext"
+	"sigs.k8s.io/kustomize/kyaml/openapi"
+	"sigs.k8s.io/kustomize/kyaml/pathutil"
 )
+
+// cmdRunner interface holds executeCmd definition which executes respective command's
+// implementation on single package
+type cmdRunner interface {
+	executeCmd(w io.Writer, pkgPath string) error
+}
+
+// executeCmdOnPkgs struct holds the parameters necessary to
+// execute the filter command on packages in rootPkgPath
+type executeCmdOnPkgs struct {
+	rootPkgPath        string
+	recurseSubPackages bool
+	needOpenAPI        bool
+	cmdRunner          cmdRunner
+	writer             io.Writer
+	skipPkgPathPrint   bool
+}
+
+// executeCmdOnPkgs takes the function definition for a command to be executed on single package, applies that definition
+// recursively on all the subpackages present in rootPkgPath if recurseSubPackages is true, else applies the command on rootPkgPath only
+func (e executeCmdOnPkgs) execute() error {
+	pkgsPaths, err := pathutil.DirsWithFile(e.rootPkgPath, ext.KRMFileName(), e.recurseSubPackages)
+	if err != nil {
+		return err
+	}
+
+	if len(pkgsPaths) == 0 {
+		// at this point, there are no openAPI files in the rootPkgPath
+		if e.needOpenAPI {
+			// few executions need openAPI file to be present(ex: setters commands), if true throw an error
+			return errors.Errorf("unable to find %q in package %q", ext.KRMFileName(), e.rootPkgPath)
+		}
+
+		// add root path for commands which doesn't need openAPI(ex: annotate, fmt)
+		pkgsPaths = []string{e.rootPkgPath}
+	}
+
+	for i := range pkgsPaths {
+		pkgPath := pkgsPaths[i]
+		// Add schema present in openAPI file for current package
+		if e.needOpenAPI {
+			if err := openapi.AddSchemaFromFile(filepath.Join(pkgPath, ext.KRMFileName())); err != nil {
+				return err
+			}
+		}
+
+		if !e.skipPkgPathPrint {
+			fmt.Fprintf(e.writer, "%s/\n", pkgPath)
+		}
+
+		err := e.cmdRunner.executeCmd(e.writer, pkgPath)
+		if err != nil {
+			return err
+		}
+
+		if i != len(pkgsPaths)-1 {
+			fmt.Fprint(e.writer, "\n")
+		}
+
+		// Delete schema present in openAPI file for current package
+		if e.needOpenAPI {
+			if err := openapi.DeleteSchemaInFile(filepath.Join(pkgPath, ext.KRMFileName())); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
 
 // parseFieldPath parse a flag value into a field path
 func parseFieldPath(path string) ([]string, error) {
@@ -45,7 +118,7 @@ func handleError(c *cobra.Command, err error) error {
 	}
 	if StackOnError {
 		if err, ok := err.(*errors.Error); ok {
-			fmt.Fprint(os.Stderr, fmt.Sprintf("%s", err.Stack()))
+			fmt.Fprintf(os.Stderr, "%s", err.Stack())
 		}
 	}
 

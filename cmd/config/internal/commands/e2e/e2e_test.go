@@ -10,19 +10,17 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"sigs.k8s.io/kustomize/kyaml/testutil"
 )
 
 func TestRunE2e(t *testing.T) {
-	binDir, err := ioutil.TempDir("", "kustomize-test-")
-	if !assert.NoError(t, err) {
-		t.FailNow()
-	}
-	//defer os.RemoveAll(binDir)
-	build(t, binDir)
+	binDir := build()
 
 	tests := []struct {
 		name           string
@@ -32,6 +30,7 @@ func TestRunE2e(t *testing.T) {
 		expectedErr    string
 		skipIfFalseEnv string
 	}{
+
 		{
 			name: "exec_function_no_args",
 			args: func(d string) []string {
@@ -60,6 +59,36 @@ metadata:
     a-string-value: ''
     a-int-value: '0'
     a-bool-value: 'false'
+`,
+				}
+			},
+		},
+
+		{
+			name: "exec_function_no_args_json",
+			args: func(d string) []string {
+				return []string{
+					"--enable-exec", "--exec-path", filepath.Join(d, "e2econtainerconfig"),
+				}
+			},
+			files: func(d string) map[string]string {
+				return map[string]string{
+					"deployment.json": `
+{
+  "apiVersion": "apps/v1",
+  "kind": "Deployment",
+  "metadata": {
+    "name": "foo"
+  }
+}
+`,
+				}
+			},
+			expectedFiles: func(d string) map[string]string {
+				return map[string]string{
+					"deployment.json": `
+{"apiVersion": "apps/v1", "kind": "Deployment", "metadata": {"name": "foo", annotations: {
+      a-string-value: '', a-int-value: '0', a-bool-value: 'false'}}}
 `,
 				}
 			},
@@ -114,7 +143,7 @@ metadata:
   annotations:
     config.kubernetes.io/function: |
       exec:
-        path: "%s"
+        path: %s
 `, filepath.Join(d, "e2econtainerconfig")),
 				}
 			},
@@ -128,7 +157,7 @@ metadata:
   annotations:
     config.kubernetes.io/function: |
       exec:
-        path: "%s"
+        path: %s
     a-string-value: ''
     a-int-value: '0'
     a-bool-value: 'false'
@@ -140,7 +169,7 @@ metadata:
 		// Starklark function tests
 		//
 		{
-			name: "exec_function_config",
+			name: "exec_function_config_data",
 			args: func(d string) []string {
 				return []string{"--enable-exec"}
 			},
@@ -154,7 +183,7 @@ metadata:
   annotations:
     config.kubernetes.io/function: |
       exec:
-        path: "%s"
+        path: %s
 data:
   stringValue: a
   intValue: 2
@@ -178,7 +207,7 @@ metadata:
   annotations:
     config.kubernetes.io/function: |
       exec:
-        path: "%s"
+        path: %s
     a-string-value: 'a'
     a-int-value: '2'
     a-bool-value: 'true'
@@ -219,7 +248,7 @@ metadata:
   annotations:
     config.kubernetes.io/function: |
       exec:
-        path: "%s"
+        path: %s
 data:
   stringValue: a
   intValue: 2
@@ -243,7 +272,7 @@ metadata:
   annotations:
     config.kubernetes.io/function: |
       exec:
-        path: "%s"
+        path: %s
 data:
   stringValue: a
   intValue: 2
@@ -470,7 +499,6 @@ def run(r, fc):
     resource["metadata"]["annotations"]["a-string-value"] = fc["data"]["stringValue"]
     resource["metadata"]["annotations"]["a-int-value"] = fc["data"]["intValue"]
     resource["metadata"]["annotations"]["a-bool-value"] = fc["data"]["boolValue"]
-
 run(ctx.resource_list["items"], ctx.resource_list["functionConfig"])
 `,
 					"config.yaml": `
@@ -547,7 +575,6 @@ def run(r, fc):
     resource["metadata"]["annotations"]["a-string-value"] = fc["data"]["stringValue"]
     resource["metadata"]["annotations"]["a-int-value"] = fc["data"]["intValue"]
     resource["metadata"]["annotations"]["a-bool-value"] = fc["data"]["boolValue"]
-
 run(ctx.resource_list["items"], ctx.resource_list["functionConfig"])
 `,
 					"deployment.yaml": `
@@ -659,6 +686,7 @@ metadata:
 		},
 	}
 
+	// TODO: dedup this with the shared version
 	for i := range tests {
 		tt := tests[i]
 		t.Run(tt.name, func(t *testing.T) {
@@ -676,13 +704,11 @@ metadata:
 			// write the input
 			for path, data := range tt.files(binDir) {
 				err := ioutil.WriteFile(path, []byte(data), 0600)
-				if !assert.NoError(t, err) {
-					t.FailNow()
-				}
+				testutil.AssertNoError(t, err)
 			}
 
-			args := append([]string{"run", "."}, tt.args(binDir)...)
-			cmd := exec.Command(filepath.Join(binDir, "kyaml"), args...)
+			args := append([]string{"fn", "run", "."}, tt.args(binDir)...)
+			cmd := exec.Command(filepath.Join(binDir, kyamlBin), args...)
 			cmd.Dir = dir
 			var stdErr, stdOut bytes.Buffer
 			cmd.Stdout = &stdOut
@@ -696,15 +722,12 @@ metadata:
 				}
 				return
 			}
-			if !assert.NoError(t, err, stdErr.String()) {
-				t.FailNow()
-			}
+			testutil.AssertNoError(t, err, stdErr.String())
 
 			for path, data := range tt.expectedFiles(binDir) {
 				b, err := ioutil.ReadFile(path)
-				if !assert.NoError(t, err, stdErr.String()) {
-					t.FailNow()
-				}
+				testutil.AssertNoError(t, err, stdErr.String())
+
 				if !assert.Equal(t, strings.TrimSpace(data), strings.TrimSpace(string(b)), stdErr.String()) {
 					t.FailNow()
 				}
@@ -713,33 +736,67 @@ metadata:
 	}
 }
 
-func build(t *testing.T, binDir string) {
-	build := exec.Command("go", "build", "-o",
-		filepath.Join(binDir, "e2econtainerconfig"))
-	build.Dir = "e2econtainerconfig"
-	build.Stdout = os.Stdout
-	build.Stderr = os.Stderr
-	if !assert.NoError(t, build.Run()) {
-		t.FailNow()
-	}
+var buildOnce sync.Once
+var binDir string
 
-	build = exec.Command("go", "build", "-o", filepath.Join(binDir, "kyaml"))
-	build.Dir = filepath.Join("..", "..", "..")
-	build.Stdout = os.Stdout
-	build.Stderr = os.Stderr
-	if !assert.NoError(t, build.Run()) {
-		t.FailNow()
-	}
+func build() string {
+	// only build the binaries once
+	buildOnce.Do(func() {
+		var err error
+		binDir, err = ioutil.TempDir("", "kustomize-test-")
+		if err != nil {
+			panic(err)
+		}
 
-	if os.Getenv("KUSTOMIZE_DOCKER_E2E") == "false" {
-		return
-	}
-	build = exec.Command(
-		"docker", "build", ".", "-t", "gcr.io/kustomize-functions/e2econtainerconfig")
-	build.Dir = "e2econtainerconfig"
-	build.Stdout = os.Stdout
-	build.Stderr = os.Stderr
-	if !assert.NoError(t, build.Run()) {
-		t.FailNow()
+		build := exec.Command("go", "build", "-o",
+			filepath.Join(binDir, e2econtainerconfigBin))
+		build.Dir = "e2econtainerconfig"
+		build.Stdout = os.Stdout
+		build.Stderr = os.Stderr
+		build.Env = os.Environ()
+
+		err = build.Run()
+		if err != nil {
+			panic(err)
+		}
+
+		build = exec.Command("go", "build", "-o", filepath.Join(binDir, kyamlBin))
+		build.Dir = filepath.Join("..", "..", "..", "kubectl-krm")
+		build.Stdout = os.Stdout
+		build.Stderr = os.Stderr
+		err = build.Run()
+		if err != nil {
+			panic(err)
+		}
+
+		if os.Getenv("KUSTOMIZE_DOCKER_E2E") == "false" {
+			return
+		}
+		build = exec.Command(
+			"docker", "build", ".", "-t", "gcr.io/kustomize-functions/e2econtainerconfig")
+		build.Dir = "e2econtainerconfig"
+		build.Stdout = os.Stdout
+		build.Stderr = os.Stderr
+		err = build.Run()
+		if err != nil {
+			panic(err)
+		}
+	})
+
+	return binDir
+}
+
+var (
+	e2econtainerconfigBin string
+	kyamlBin              string
+)
+
+func init() {
+	kyamlBin = "kubectl-krm"
+	e2econtainerconfigBin = "e2econtainerconfig"
+
+	if runtime.GOOS == "windows" {
+		kyamlBin = "kubectl-krm.exe"
+		e2econtainerconfigBin = "e2econtainerconfig.exe"
 	}
 }

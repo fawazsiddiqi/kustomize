@@ -1,5 +1,10 @@
 # Demo: Components
 
+For more details regarding this feature you can read the
+[Kustomize Components KEP](https://github.com/kubernetes/enhancements/blob/master/keps/sig-cli/1802-kustomize-components.md).
+
+_This example requires Kustomize ``v3.7.0`` or newer_
+
 Suppose you've written a very simple Web application:
 
 ```yaml
@@ -122,10 +127,10 @@ secretGenerator:
       - site_key.txt
       - secret_key.txt
 
-patches:
+patchesStrategicMerge:
   - configmap.yaml
 
-patches:
+patchesJson6902:
 - target:
     group: apps
     version: v1
@@ -177,6 +182,23 @@ data:
 EOF
 ```
 
+Create local input files for external DB's password and reCAPTCHA's keys:
+
+```shell
+
+cat <<EOF >$COMMUNITY/dbpass.txt
+dbpass
+EOF
+
+cat <<EOF >$COMMUNITY/site_key.txt
+sitekey
+EOF
+
+cat <<EOF >$COMMUNITY/secret_key.txt
+secretkey
+EOF
+```
+
 Define a **enterprise** overlay that:
 
 - generates `Secrets` for LDAP's password and external DB's password
@@ -203,10 +225,10 @@ secretGenerator:
     files:
       - dbpass.txt
 
-patches:
+patchesStrategicMerge:
   - configmap.yaml
 
-patches:
+patchesJson6902:
 - target:
     group: apps
     version: v1
@@ -258,6 +280,19 @@ data:
 EOF
 ```
 
+Create local input files for LDAP's password and external DB's password:
+
+```shell
+
+cat <<EOF >$ENTERPRISE/ldappass.txt
+ldappass
+EOF
+
+cat <<EOF >$ENTERPRISE/dbpass.txt
+dbpass
+EOF
+```
+
 Define a **dev** overlay that supports all three features(ExternalDB, LDAP,
 reCAPTCHA) and conditionally enables some or all of them. In this example, we
 define a dev overlay that supports all the features, but has disabled the LDAP
@@ -291,10 +326,10 @@ secretGenerator:
       - site_key.txt
       - secret_key.txt
 
-patches:
+patchesStrategicMerge:
   - configmap.yaml
 
-patches:
+patchesJson6902:
 - target:
     group: apps
     version: v1
@@ -359,6 +394,23 @@ data:
     enabled=true
     site_key=/var/run/secrets/recaptcha/site_key.txt
     secret_key=/var/run/secrets/recaptcha/secret_key.txt
+EOF
+```
+
+Create local input files for external DB's password and reCAPTCHA's keys:
+
+```shell
+
+cat <<EOF >$DEV/dbpass.txt
+dbpass
+EOF
+
+cat <<EOF >$DEV/site_key.txt
+sitekey
+EOF
+
+cat <<EOF >$DEV/secret_key.txt
+secretkey
 EOF
 ```
 

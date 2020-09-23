@@ -9,7 +9,7 @@ import (
 	kusttest_test "sigs.k8s.io/kustomize/api/testutils/kusttest"
 )
 
-func TestNullValues(t *testing.T) {
+func TestNullValues1(t *testing.T) {
 	th := kusttest_test.MakeHarness(t)
 	th.WriteF("/app/deployment.yaml", `
 apiVersion: apps/v1
@@ -60,5 +60,38 @@ spec:
       - args: null
         image: image
         name: example
+`)
+}
+
+func TestNullValues2(t *testing.T) {
+	th := kusttest_test.MakeHarness(t)
+	th.WriteF("deploy.yaml", `
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: test
+spec:
+  template:
+    spec:
+      containers:
+        - name: test
+      volumes: null
+`)
+	th.WriteK(".", `
+resources:
+- deploy.yaml
+`)
+	m := th.Run(".", th.MakeDefaultOptions())
+	th.AssertActualEqualsExpected(m, `
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: test
+spec:
+  template:
+    spec:
+      containers:
+      - name: test
+      volumes: null
 `)
 }

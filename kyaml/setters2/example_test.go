@@ -38,7 +38,7 @@ metadata:
 spec:
   replicas: 3 # {"$ref": "#/definitions/io.k8s.cli.setters.replicas"}
 `
-	_, err := openapi.AddSchema([]byte(schema)) // add the schema definitions
+	err := openapi.AddSchema([]byte(schema)) // add the schema definitions
 	if err != nil {
 		panic(err)
 	}
@@ -103,7 +103,7 @@ spec:
         image: nginx:1.7.9 # {"$ref": "#/definitions/io.k8s.cli.substitutions.image"}
 `
 
-	_, err := openapi.AddSchema([]byte(schema)) // add the schema definitions
+	err := openapi.AddSchema([]byte(schema)) // add the schema definitions
 	if err != nil {
 		panic(err)
 	}
@@ -162,7 +162,7 @@ spec:
 	//   annotations:
 	//     something: 3
 	// spec:
-	//   replicas: 3 # {"$ref":"#/definitions/io.k8s.cli.setters.replicas"}
+	//   replicas: 3 # {"$openapi":"replicas"}
 }
 
 // ExampleAdd demonstrates adding a setter reference to fields.
@@ -196,7 +196,7 @@ spec:
 	// metadata:
 	//   name: nginx-deployment
 	//   annotations:
-	//     something: 3 # {"$ref":"#/definitions/io.k8s.cli.setters.replicas"}
+	//     something: 3 # {"$openapi":"replicas"}
 	// spec:
-	//   replicas: 3 # {"$ref":"#/definitions/io.k8s.cli.setters.replicas"}
+	//   replicas: 3 # {"$openapi":"replicas"}
 }

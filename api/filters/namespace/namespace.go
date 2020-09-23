@@ -4,6 +4,8 @@
 package namespace
 
 import (
+	"sigs.k8s.io/kustomize/api/filters/fieldspec"
+	"sigs.k8s.io/kustomize/api/filters/filtersutil"
 	"sigs.k8s.io/kustomize/api/filters/fsslice"
 	"sigs.k8s.io/kustomize/api/types"
 	"sigs.k8s.io/kustomize/kyaml/kio"
@@ -42,9 +44,9 @@ func (ns Filter) run(node *yaml.RNode) (*yaml.RNode, error) {
 	// transformations based on data -- :)
 	err := node.PipeE(fsslice.Filter{
 		FsSlice:    ns.FsSlice,
-		SetValue:   fsslice.SetScalar(ns.Namespace),
+		SetValue:   filtersutil.SetScalar(ns.Namespace),
 		CreateKind: yaml.ScalarNode, // Namespace is a ScalarNode
-		CreateTag:  yaml.StringTag,
+		CreateTag:  yaml.NodeTagString,
 	})
 	return node, err
 }
@@ -67,13 +69,13 @@ func (ns Filter) hacks(obj *yaml.RNode) error {
 // metaNamespaceHack is a hack for implementing the namespace transform
 // for the metadata.namespace field on namespace scoped resources.
 // namespace scoped resources are determined by NOT being present
-// in a blacklist of cluster-scoped resource types (by apiVersion and kind).
+// in a hard-coded list of cluster-scoped resource types (by apiVersion and kind).
 //
 // This hack should be updated to allow individual resources to specify
 // if they are cluster scoped through either an annotation on the resources,
 // or through inlined OpenAPI on the resource as a YAML comment.
 func (ns Filter) metaNamespaceHack(obj *yaml.RNode, meta yaml.ResourceMeta) error {
-	gvk := fsslice.GetGVK(meta)
+	gvk := fieldspec.GetGVK(meta)
 	if !gvk.IsNamespaceableKind() {
 		return nil
 	}
@@ -81,7 +83,7 @@ func (ns Filter) metaNamespaceHack(obj *yaml.RNode, meta yaml.ResourceMeta) erro
 		FsSlice: []types.FieldSpec{
 			{Path: types.MetadataNamespacePath, CreateIfNotPresent: true},
 		},
-		SetValue:   fsslice.SetScalar(ns.Namespace),
+		SetValue:   filtersutil.SetScalar(ns.Namespace),
 		CreateKind: yaml.ScalarNode, // Namespace is a ScalarNode
 	}
 	_, err := f.Filter(obj)
@@ -110,7 +112,7 @@ func (ns Filter) roleBindingHack(obj *yaml.RNode, meta yaml.ResourceMeta) error 
 	// Lookup the namespace field on all elements.
 	// We should change the fieldspec so this isn't necessary.
 	obj, err := obj.Pipe(yaml.Lookup(subjectsField))
-	if err != nil || yaml.IsEmpty(obj) {
+	if err != nil || yaml.IsMissingOrNull(obj) {
 		return err
 	}
 
@@ -123,7 +125,7 @@ func (ns Filter) roleBindingHack(obj *yaml.RNode, meta yaml.ResourceMeta) error 
 		name, err := o.Pipe(
 			yaml.Lookup("name"), yaml.Match("default"),
 		)
-		if err != nil || yaml.IsEmpty(name) {
+		if err != nil || yaml.IsMissingOrNull(name) {
 			return err
 		}
 

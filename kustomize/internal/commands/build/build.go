@@ -25,6 +25,7 @@ type Options struct {
 	kustomizationPath string
 	outputPath        string
 	outOrder          reorderOutput
+	fnOptions         types.FnPluginLoadingOptions
 }
 
 // NewOptions creates a Options object
@@ -46,7 +47,7 @@ The argument can be a URL resolving to a directory
 with a kustomization.yaml file, e.g.
 
   kustomize build \
-    github.com/kubernetes-sigs/kustomize//examples/multibases/dev/?ref=v1.0.6
+    github.com/kubernetes-sigs/kustomize/examples/multibases/dev/?ref=v1.0.6
 
 The URL should be formulated as described at
 https://github.com/hashicorp/go-getter#url-format
@@ -74,9 +75,28 @@ func NewCmdBuild(out io.Writer) *cobra.Command {
 		&o.outputPath,
 		"output", "o", "",
 		"If specified, write the build output to this path.")
+	cmd.Flags().BoolVar(
+		&o.fnOptions.EnableExec, "enable-exec", false, /*do not change!*/
+		"enable support for exec functions -- note: exec functions run arbitrary code -- do not use for untrusted configs!!! (Alpha)")
+	cmd.Flags().BoolVar(
+		&o.fnOptions.EnableStar, "enable-star", false,
+		"enable support for starlark functions. (Alpha)")
+	cmd.Flags().BoolVar(
+		&o.fnOptions.Network, "network", false,
+		"enable network access for functions that declare it")
+	cmd.Flags().StringVar(
+		&o.fnOptions.NetworkName, "network-name", "bridge",
+		"the docker network to run the container in")
+	cmd.Flags().StringArrayVar(
+		&o.fnOptions.Mounts, "mount", []string{},
+		"a list of storage options read from the filesystem")
+
 	addFlagLoadRestrictor(cmd.Flags())
 	addFlagEnablePlugins(cmd.Flags())
 	addFlagReorderOutput(cmd.Flags())
+	addFlagEnableManagedbyLabel(cmd.Flags())
+	addFlagEnableKyaml(cmd.Flags())
+
 	return cmd
 }
 
@@ -101,19 +121,19 @@ func (o *Options) Validate(args []string) (err error) {
 }
 
 func (o *Options) makeOptions() *krusty.Options {
-	opts := &krusty.Options{
-		DoLegacyResourceSort: o.outOrder == legacy,
-		LoadRestrictions:     getFlagLoadRestrictorValue(),
-	}
+	opts := krusty.MakeDefaultOptions()
+	opts.DoLegacyResourceSort = o.outOrder == legacy
+	opts.LoadRestrictions = getFlagLoadRestrictorValue()
 	if isFlagEnablePluginsSet() {
 		c, err := konfig.EnabledPluginConfig(types.BploUseStaticallyLinked)
 		if err != nil {
 			log.Fatal(err)
 		}
+		c.FnpLoadingOptions = o.fnOptions
 		opts.PluginConfig = c
-	} else {
-		opts.PluginConfig = konfig.DisabledPluginConfig()
 	}
+	opts.AddManagedbyLabel = isManagedbyLabelEnabled()
+	opts.UseKyaml = flagEnableKyamlValue
 	return opts
 }
 

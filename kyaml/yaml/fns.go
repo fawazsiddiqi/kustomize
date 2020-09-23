@@ -67,14 +67,15 @@ func (e ElementSetter) Filter(rn *RNode) (*RNode, error) {
 	matchingElementFound := false
 	for i := range rn.YNode().Content {
 		elem := rn.Content()[i]
+		newNode := NewRNode(elem)
 
 		// empty elements are not valid -- they at least need an associative key
-		if IsEmpty(NewRNode(elem)) {
+		if IsMissingOrNull(newNode) || IsEmptyMap(newNode) {
 			continue
 		}
 
 		// check if this is the element we are matching
-		val, err := NewRNode(elem).Pipe(FieldMatcher{Name: e.Key, StringValue: e.Value})
+		val, err := newNode.Pipe(FieldMatcher{Name: e.Key, StringValue: e.Value})
 		if err != nil {
 			return nil, err
 		}
@@ -446,6 +447,9 @@ type FieldSetter struct {
 	// value on the ScalarNode.
 	Name string `yaml:"name,omitempty"`
 
+	// Comments for the field
+	Comments Comments `yaml:"comments,omitempty"`
+
 	// Value is the value to set.
 	// Optional if Kind is set.
 	Value *RNode `yaml:"value,omitempty"`
@@ -467,6 +471,9 @@ func (s FieldSetter) Filter(rn *RNode) (*RNode, error) {
 		if err := ErrorIfInvalid(rn, yaml.ScalarNode); err != nil {
 			return rn, err
 		}
+		if IsMissingOrNull(s.Value) {
+			return rn, nil
+		}
 		// only apply the style if there is not an existing style
 		// or we want to override it
 		if !s.OverrideStyle || s.Value.YNode().Style == 0 {
@@ -478,7 +485,7 @@ func (s FieldSetter) Filter(rn *RNode) (*RNode, error) {
 	}
 
 	// Clear the field if it is empty, or explicitly null
-	if s.Value == nil || IsNull(s.Value) {
+	if s.Value == nil || s.Value.IsTaggedNull() {
 		return rn.Pipe(Clear(s.Name))
 	}
 
@@ -500,7 +507,8 @@ func (s FieldSetter) Filter(rn *RNode) (*RNode, error) {
 
 	// create the field
 	rn.YNode().Content = append(rn.YNode().Content,
-		&yaml.Node{Kind: yaml.ScalarNode, Value: s.Name},
+		&yaml.Node{Kind: yaml.ScalarNode, HeadComment: s.Comments.HeadComment,
+			LineComment: s.Comments.LineComment, FootComment: s.Comments.FootComment, Value: s.Name},
 		s.Value.YNode())
 	return s.Value, nil
 }
@@ -545,7 +553,7 @@ func IsFoundOrError(rn *RNode, err error) bool {
 
 func ErrorIfAnyInvalidAndNonNull(kind yaml.Kind, rn ...*RNode) error {
 	for i := range rn {
-		if IsEmpty(rn[i]) {
+		if IsMissingOrNull(rn[i]) {
 			continue
 		}
 		if err := ErrorIfInvalid(rn[i], kind); err != nil {
@@ -564,7 +572,7 @@ var nodeTypeIndex = map[yaml.Kind]string{
 }
 
 func ErrorIfInvalid(rn *RNode, kind yaml.Kind) error {
-	if rn == nil || rn.YNode() == nil || IsNull(rn) {
+	if IsMissingOrNull(rn) {
 		// node has no type, pass validation
 		return nil
 	}
@@ -597,7 +605,7 @@ func IsListIndex(p string) bool {
 // SplitIndexNameValue splits a lookup part Val index into the field name
 // and field value to match.
 // e.g. splits [name=nginx] into (name, nginx)
-// e.g. splits [=-jar] into ("", jar)
+// e.g. splits [=-jar] into ("", -jar)
 func SplitIndexNameValue(p string) (string, string, error) {
 	elem := strings.TrimSuffix(p, "]")
 	elem = strings.TrimPrefix(elem, "[")

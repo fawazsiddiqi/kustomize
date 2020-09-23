@@ -70,7 +70,7 @@ metadata:
 apiVersion: v1
 kind: Namespace
 metadata:
-  name: p-b-myNs
+  name: myNs
 ---
 apiVersion: v1
 kind: Role
@@ -95,7 +95,7 @@ metadata:
 apiVersion: v1
 kind: Namespace
 metadata:
-  name: p-myNs2
+  name: myNs2
 `)
 }
 
@@ -129,6 +129,54 @@ metadata:
 spec:
   selector:
     backend: bungie
+`)
+}
+
+func TestTinyOverlay(t *testing.T) {
+	th := kusttest_test.MakeHarness(t)
+	th.WriteK("base", `
+namePrefix: a-
+resources:
+- deployment.yaml
+`)
+	th.WriteF("base/deployment.yaml", `
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: myDeployment
+spec:
+  template:
+    spec:
+      containers:
+      - image: whatever
+`)
+	th.WriteK("overlay", `
+namePrefix: b-
+resources:
+- ../base
+patchesStrategicMerge:
+- depPatch.yaml
+`)
+	th.WriteF("overlay/depPatch.yaml", `
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: myDeployment
+spec:
+  replicas: 999
+`)
+	m := th.Run("overlay", th.MakeDefaultOptions())
+	th.AssertActualEqualsExpected(m, `
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: b-a-myDeployment
+spec:
+  replicas: 999
+  template:
+    spec:
+      containers:
+      - image: whatever
 `)
 }
 

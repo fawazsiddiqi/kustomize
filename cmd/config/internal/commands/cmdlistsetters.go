@@ -7,12 +7,14 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/olekukonko/tablewriter"
 	"github.com/spf13/cobra"
 	"sigs.k8s.io/kustomize/cmd/config/ext"
 	"sigs.k8s.io/kustomize/cmd/config/internal/generateddocs/commands"
+	"sigs.k8s.io/kustomize/kyaml/fieldmeta"
 	"sigs.k8s.io/kustomize/kyaml/setters"
 	"sigs.k8s.io/kustomize/kyaml/setters2"
 )
@@ -31,6 +33,10 @@ func NewListSettersRunner(parent string) *ListSettersRunner {
 	}
 	c.Flags().BoolVar(&r.Markdown, "markdown", false,
 		"output as github markdown")
+	c.Flags().BoolVar(&r.IncludeSubst, "include-subst", false,
+		"include substitutions in the output")
+	c.Flags().BoolVarP(&r.RecurseSubPackages, "recurse-subpackages", "R", true,
+		"list setters recursively in all the nested subpackages")
 	fixDocs(parent, c)
 	r.Command = c
 	return r
@@ -41,10 +47,12 @@ func ListSettersCommand(parent string) *cobra.Command {
 }
 
 type ListSettersRunner struct {
-	Command  *cobra.Command
-	Lookup   setters.LookupSetters
-	List     setters2.List
-	Markdown bool
+	Command            *cobra.Command
+	Lookup             setters.LookupSetters
+	List               setters2.List
+	Markdown           bool
+	IncludeSubst       bool
+	RecurseSubPackages bool
 }
 
 func (r *ListSettersRunner) preRunE(c *cobra.Command, args []string) error {
@@ -59,26 +67,47 @@ func (r *ListSettersRunner) preRunE(c *cobra.Command, args []string) error {
 
 func (r *ListSettersRunner) runE(c *cobra.Command, args []string) error {
 	if setterVersion == "v2" {
-		if err := r.ListSetters(c, args); err != nil {
-			return err
+		e := executeCmdOnPkgs{
+			needOpenAPI:        true,
+			writer:             c.OutOrStdout(),
+			rootPkgPath:        args[0],
+			recurseSubPackages: r.RecurseSubPackages,
+			cmdRunner:          r,
 		}
-		return r.ListSubstitutions(c, args)
-	}
 
+		err := e.execute()
+		if err != nil {
+			return handleError(c, err)
+		}
+		return nil
+	}
 	return handleError(c, lookup(r.Lookup, c, args))
 }
 
-func (r *ListSettersRunner) ListSetters(c *cobra.Command, args []string) error {
+func (r *ListSettersRunner) executeCmd(w io.Writer, pkgPath string) error {
+	r.List = setters2.List{
+		Name:            r.List.Name,
+		OpenAPIFileName: ext.KRMFileName(),
+	}
+	openAPIPath := filepath.Join(pkgPath, ext.KRMFileName())
+	if err := r.ListSetters(w, openAPIPath, pkgPath); err != nil {
+		return err
+	}
+	if r.IncludeSubst {
+		if err := r.ListSubstitutions(w, openAPIPath); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (r *ListSettersRunner) ListSetters(w io.Writer, openAPIPath, resourcePath string) error {
 	// use setters v2
-	path, err := ext.GetOpenAPIFile(args)
-	if err != nil {
+	if err := r.List.ListSetters(openAPIPath, resourcePath); err != nil {
 		return err
 	}
-	if err := r.List.ListSetters(path, args[0]); err != nil {
-		return err
-	}
-	table := newTable(c.OutOrStdout(), r.Markdown)
-	table.SetHeader([]string{"NAME", "VALUE", "SET BY", "DESCRIPTION", "COUNT"})
+	table := newTable(w, r.Markdown)
+	table.SetHeader([]string{"NAME", "VALUE", "SET BY", "DESCRIPTION", "COUNT", "REQUIRED"})
 	for i := range r.List.Setters {
 		s := r.List.Setters[i]
 		v := s.Value
@@ -88,8 +117,14 @@ func (r *ListSettersRunner) ListSetters(c *cobra.Command, args []string) error {
 			v = strings.Join(s.ListValues, ",")
 			v = fmt.Sprintf("[%s]", v)
 		}
+		var required string
+		if s.Required {
+			required = "Yes"
+		} else {
+			required = "No"
+		}
 		table.Append([]string{
-			s.Name, v, s.SetBy, s.Description, fmt.Sprintf("%d", s.Count)})
+			s.Name, v, s.SetBy, s.Description, fmt.Sprintf("%d", s.Count), required})
 	}
 	table.Render()
 
@@ -102,36 +137,34 @@ func (r *ListSettersRunner) ListSetters(c *cobra.Command, args []string) error {
 	return nil
 }
 
-func (r *ListSettersRunner) ListSubstitutions(c *cobra.Command, args []string) error {
+func (r *ListSettersRunner) ListSubstitutions(w io.Writer, openAPIPath string) error {
 	// use setters v2
-	path, err := ext.GetOpenAPIFile(args)
-	if err != nil {
+	if err := r.List.ListSubst(openAPIPath); err != nil {
 		return err
 	}
-	if err := r.List.ListSubst(path); err != nil {
-		return err
-	}
-	table := newTable(c.OutOrStdout(), r.Markdown)
-	table.SetHeader([]string{"SUBSTITUTION", "PATTERN", "SETTERS"})
+	table := newTable(w, r.Markdown)
+	b := tablewriter.Border{Top: true}
+	table.SetBorders(b)
+
+	table.SetHeader([]string{"SUBSTITUTION", "PATTERN", "REFERENCES"})
 	for i := range r.List.Substitutions {
 		s := r.List.Substitutions[i]
-		setters := ""
+		refs := ""
 		for _, value := range s.Values {
-			setter := strings.TrimPrefix(value.Ref, setters2.DefinitionsPrefix+setters2.SetterDefinitionPrefix)
-			setters = setters + "," + setter
+			// trim setter and substitution prefixes
+			ref := strings.TrimPrefix(
+				strings.TrimPrefix(value.Ref, fieldmeta.DefinitionsPrefix+fieldmeta.SetterDefinitionPrefix),
+				fieldmeta.DefinitionsPrefix+fieldmeta.SubstitutionDefinitionPrefix)
+			refs = refs + "," + ref
 		}
-		setters = fmt.Sprintf("[%s]", strings.TrimPrefix(setters, ","))
+		refs = fmt.Sprintf("[%s]", strings.TrimPrefix(refs, ","))
 		table.Append([]string{
-			s.Name, s.Pattern, setters})
+			s.Name, s.Pattern, refs})
 	}
 	if len(r.List.Substitutions) == 0 {
-		// exit non-0 if no matching substitutions are found
-		if ExitOnError {
-			os.Exit(1)
-		}
-	} else {
-		table.Render()
+		return nil
 	}
+	table.Render()
 
 	return nil
 }

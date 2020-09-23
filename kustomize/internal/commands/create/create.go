@@ -13,6 +13,7 @@ import (
 	"sigs.k8s.io/kustomize/api/filesys"
 	"sigs.k8s.io/kustomize/api/ifc"
 	"sigs.k8s.io/kustomize/api/konfig"
+	"sigs.k8s.io/kustomize/api/loader"
 	"sigs.k8s.io/kustomize/kustomize/v3/internal/commands/kustfile"
 	"sigs.k8s.io/kustomize/kustomize/v3/internal/commands/util"
 )
@@ -33,9 +34,10 @@ type createFlags struct {
 func NewCmdCreate(fSys filesys.FileSystem, uf ifc.KunstructuredFactory) *cobra.Command {
 	opts := createFlags{path: filesys.SelfDir}
 	c := &cobra.Command{
-		Use:   "create",
-		Short: "Create a new kustomization in the current directory",
-		Long:  "",
+		Use:     "create",
+		Aliases: []string{"init"},
+		Short:   "Create a new kustomization in the current directory",
+		Long:    "",
 		Example: `
 	# Create a new overlay from the base '../base".
 	kustomize create --resources ../base
@@ -97,7 +99,7 @@ func runCreate(opts createFlags, fSys filesys.FileSystem, uf ifc.KunstructuredFa
 	var resources []string
 	var err error
 	if opts.resources != "" {
-		resources, err = util.GlobPatterns(fSys, strings.Split(opts.resources, ","))
+		resources, err = util.GlobPatternsWithLoader(fSys, loader.NewFileLoaderAtCwd(fSys), strings.Split(opts.resources, ","))
 		if err != nil {
 			return err
 		}

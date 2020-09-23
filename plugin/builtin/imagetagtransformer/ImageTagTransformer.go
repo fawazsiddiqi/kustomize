@@ -9,10 +9,10 @@ import (
 	"regexp"
 	"strings"
 
-	"sigs.k8s.io/kustomize/api/transform"
-	"sigs.k8s.io/kustomize/api/types"
-
+	"sigs.k8s.io/kustomize/api/filters/imagetag"
 	"sigs.k8s.io/kustomize/api/resmap"
+	"sigs.k8s.io/kustomize/api/types"
+	"sigs.k8s.io/kustomize/kyaml/filtersutil"
 	"sigs.k8s.io/yaml"
 )
 
@@ -35,18 +35,19 @@ func (p *plugin) Config(
 
 func (p *plugin) Transform(m resmap.ResMap) error {
 	for _, r := range m.Resources() {
-		for _, path := range p.FieldSpecs {
-			if !r.OrgId().IsSelected(&path.Gvk) {
-				continue
-			}
-			err := transform.MutateField(
-				r.Map(), path.PathSlice(), false, p.mutateImage)
-			if err != nil {
-				return err
-			}
+		// traverse all fields at first
+		err := filtersutil.ApplyToJSON(imagetag.LegacyFilter{
+			ImageTag: p.ImageTag,
+		}, r)
+		if err != nil {
+			return err
 		}
-		// Kept for backward compatibility
-		if err := p.findAndReplaceImage(r.Map()); err != nil && r.OrgId().Kind != `CustomResourceDefinition` {
+		// then use user specified field specs
+		err = filtersutil.ApplyToJSON(imagetag.Filter{
+			ImageTag: p.ImageTag,
+			FsSlice:  p.FieldSpecs,
+		}, r)
+		if err != nil {
 			return err
 		}
 	}

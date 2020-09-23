@@ -14,6 +14,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+
 	"sigs.k8s.io/kustomize/kyaml/copyutil"
 	"sigs.k8s.io/kustomize/kyaml/errors"
 	"sigs.k8s.io/kustomize/kyaml/fn/runtime/container"
@@ -59,7 +60,8 @@ kind:
 		return
 	}
 	filter, _ := instance.functionFilterProvider(spec, api)
-	cf := &container.Filter{Image: "example.com:version"}
+	c := container.NewContainer(runtimeutil.ContainerSpec{Image: "example.com:version"})
+	cf := &c
 	cf.Exec.FunctionConfig = api
 	assert.Equal(t, cf, filter)
 }
@@ -89,7 +91,8 @@ kind:
 		return
 	}
 	filter, _ := instance.functionFilterProvider(spec, api)
-	cf := &container.Filter{Image: "example.com:version"}
+	c := container.NewContainer(runtimeutil.ContainerSpec{Image: "example.com:version"})
+	cf := &c
 	cf.Exec.FunctionConfig = api
 	cf.Exec.GlobalScope = true
 	assert.Equal(t, cf, filter)
@@ -239,6 +242,17 @@ metadata:
 				},
 			},
 			out: []string{"gcr.io/example.com/image:v1.0.0"},
+		},
+
+		{name: "no function spec",
+			in: []f{
+				{
+					explicitFunction: true,
+					value: `
+foo: bar
+`,
+				},
+			},
 		},
 
 		// Test
@@ -682,6 +696,98 @@ metadata:
 	}
 }
 
+func TestRunFns_network(t *testing.T) {
+	tests := []struct {
+		name          string
+		input         string
+		network       bool
+		expectNetwork bool
+		error         string
+	}{
+		{
+			name: "imperative false, declarative false",
+			input: `
+metadata:
+  annotations:
+    config.kubernetes.io/function: |
+      container:
+        image: a
+        network: false
+`,
+			network:       false,
+			expectNetwork: false,
+		},
+		{
+			name: "imperative true, declarative false",
+			input: `
+metadata:
+  annotations:
+    config.kubernetes.io/function: |
+      container:
+        image: a
+        network: false
+`,
+			network:       true,
+			expectNetwork: false,
+		},
+		{
+			name: "imperative true, declarative true",
+			input: `
+metadata:
+  annotations:
+    config.kubernetes.io/function: |
+      container:
+        image: a
+        network: true
+`,
+			network:       true,
+			expectNetwork: true,
+		},
+		{
+			name: "imperative false, declarative true",
+			input: `
+metadata:
+  annotations:
+    config.kubernetes.io/function: |
+      container:
+        image: a
+        network: true
+`,
+			network: false,
+			error:   "network required but not enabled with --network",
+		},
+	}
+
+	for i := range tests {
+		tt := tests[i]
+		fn := yaml.MustParse(tt.input)
+		t.Run(tt.name, func(t *testing.T) {
+			// init the instance
+			r := &RunFns{
+				Functions: []*yaml.RNode{fn},
+				Network:   tt.network,
+			}
+			r.init()
+
+			_, fltrs, _, err := r.getNodesAndFilters()
+			if tt.error != "" {
+				if !assert.EqualError(t, err, tt.error) {
+					t.FailNow()
+				}
+				return
+			}
+			if !assert.NoError(t, err) {
+				t.FailNow()
+			}
+
+			fltr := fltrs[0].(*container.Filter)
+			if !assert.Equal(t, tt.expectNetwork, fltr.Network) {
+				t.FailNow()
+			}
+		})
+	}
+}
+
 func TestCmd_Execute(t *testing.T) {
 	dir := setupTest(t)
 	defer os.RemoveAll(dir)
@@ -906,6 +1012,36 @@ func TestCmd_Execute_setInput(t *testing.T) {
 	assert.Contains(t, string(b), "kind: StatefulSet")
 }
 
+// TestCmd_Execute_enableLogSteps tests the execution of a filter with LogSteps enabled.
+func TestCmd_Execute_enableLogSteps(t *testing.T) {
+	dir := setupTest(t)
+	defer os.RemoveAll(dir)
+
+	// write a test filter to the directory of configuration
+	if !assert.NoError(t, ioutil.WriteFile(
+		filepath.Join(dir, "filter.yaml"), []byte(ValueReplacerYAMLData), 0600)) {
+		return
+	}
+
+	logs := &bytes.Buffer{}
+	instance := RunFns{
+		Path:                   dir,
+		functionFilterProvider: getFilterProvider(t),
+		LogSteps:               true,
+		LogWriter:              logs,
+	}
+	if !assert.NoError(t, instance.Execute()) {
+		t.FailNow()
+	}
+	b, err := ioutil.ReadFile(
+		filepath.Join(dir, "java", "java-deployment.resource.yaml"))
+	if !assert.NoError(t, err) {
+		t.FailNow()
+	}
+	assert.Contains(t, string(b), "kind: StatefulSet")
+	assert.Equal(t, "Running unknown-type function\n", logs.String())
+}
+
 // setupTest initializes a temp test directory containing test data
 func setupTest(t *testing.T) string {
 	dir, err := ioutil.TempDir("", "kustomize-kyaml-test")
@@ -951,5 +1087,57 @@ func getFilterProvider(t *testing.T) func(runtimeutil.FunctionSpec, *yaml.RNode)
 		return filters.Modifier{
 			Filters: []yaml.YFilter{{Filter: yaml.Lookup("kind")}, filter},
 		}, nil
+	}
+}
+
+func TestRunFns_mergeContainerEnv(t *testing.T) {
+	testcases := []struct {
+		name      string
+		instance  RunFns
+		inputEnvs []string
+		expect    runtimeutil.ContainerEnv
+	}{
+		{
+			name:     "all empty",
+			instance: RunFns{},
+			expect:   *runtimeutil.NewContainerEnv(),
+		},
+		{
+			name:      "empty command line envs",
+			instance:  RunFns{},
+			inputEnvs: []string{"foo=bar"},
+			expect:    *runtimeutil.NewContainerEnvFromStringSlice([]string{"foo=bar"}),
+		},
+		{
+			name: "empty declarative envs",
+			instance: RunFns{
+				Env: []string{"foo=bar"},
+			},
+			expect: *runtimeutil.NewContainerEnvFromStringSlice([]string{"foo=bar"}),
+		},
+		{
+			name: "same key",
+			instance: RunFns{
+				Env: []string{"foo=bar", "foo"},
+			},
+			inputEnvs: []string{"foo=bar1", "bar"},
+			expect:    *runtimeutil.NewContainerEnvFromStringSlice([]string{"foo=bar", "bar", "foo"}),
+		},
+		{
+			name: "same exported key",
+			instance: RunFns{
+				Env: []string{"foo=bar", "foo"},
+			},
+			inputEnvs: []string{"foo1=bar1", "foo"},
+			expect:    *runtimeutil.NewContainerEnvFromStringSlice([]string{"foo=bar", "foo1=bar1", "foo"}),
+		},
+	}
+
+	for i := range testcases {
+		tc := testcases[i]
+		t.Run(tc.name, func(t *testing.T) {
+			envs := tc.instance.mergeContainerEnv(tc.inputEnvs)
+			assert.Equal(t, tc.expect.GetDockerFlags(), runtimeutil.NewContainerEnvFromStringSlice(envs).GetDockerFlags())
+		})
 	}
 }

@@ -11,6 +11,7 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/assert"
+
 	"sigs.k8s.io/kustomize/kyaml/runfn"
 )
 
@@ -28,7 +29,6 @@ func TestRunFnCommand_preRunE(t *testing.T) {
 		output         io.Writer
 		functionPaths  []string
 		network        bool
-		networkName    string
 		mount          []string
 	}{
 		{
@@ -94,34 +94,32 @@ apiVersion: v1
 `,
 		},
 		{
-			name:        "network enabled",
-			args:        []string{"run", "dir", "--image", "foo:bar", "--network"},
-			path:        "dir",
-			network:     true,
-			networkName: "bridge",
+			name:    "network enabled",
+			args:    []string{"run", "dir", "--image", "foo:bar", "--network"},
+			path:    "dir",
+			network: true,
 			expected: `
 metadata:
   name: function-input
   annotations:
     config.kubernetes.io/function: |
-      container: {image: 'foo:bar', network: {required: true}}
+      container: {image: 'foo:bar', network: true}
 data: {}
 kind: ConfigMap
 apiVersion: v1
 `,
 		},
 		{
-			name:        "with network name",
-			args:        []string{"run", "dir", "--image", "foo:bar", "--network", "--network-name", "foo"},
-			path:        "dir",
-			network:     true,
-			networkName: "foo",
+			name:    "with network name",
+			args:    []string{"run", "dir", "--image", "foo:bar", "--network"},
+			path:    "dir",
+			network: true,
 			expected: `
 metadata:
   name: function-input
   annotations:
     config.kubernetes.io/function: |
-      container: {image: 'foo:bar', network: {required: true}}
+      container: {image: 'foo:bar', network: true}
 data: {}
 kind: ConfigMap
 apiVersion: v1
@@ -201,8 +199,8 @@ apiVersion: v1
 			path: "dir",
 			expectedStruct: &runfn.RunFns{
 				Path:           "dir",
-				NetworkName:    "bridge",
 				EnableStarlark: true,
+				Env:            []string{},
 			},
 		},
 		{
@@ -253,9 +251,9 @@ apiVersion: v1
 			args: []string{"run", "dir", "--results-dir", "foo/", "--image", "foo:bar", "--", "a=b", "c=d", "e=f"},
 			path: "dir",
 			expectedStruct: &runfn.RunFns{
-				Path:        "dir",
-				NetworkName: "bridge",
-				ResultsDir:  "foo/",
+				Path:       "dir",
+				ResultsDir: "foo/",
+				Env:        []string{},
 			},
 			expected: `
 metadata:
@@ -282,6 +280,25 @@ apiVersion: v1
 			name: "config map bad data",
 			args: []string{"run", "dir", "--image", "foo:bar", "--", "a=b", "c", "e=f"},
 			err:  "must have keys and values separated by",
+		},
+		{
+			name: "log steps",
+			args: []string{"run", "dir", "--log-steps"},
+			path: "dir",
+			expectedStruct: &runfn.RunFns{
+				Path:     "dir",
+				LogSteps: true,
+				Env:      []string{},
+			},
+		},
+		{
+			name: "envs",
+			args: []string{"run", "dir", "--env", "FOO=BAR", "-e", "BAR"},
+			path: "dir",
+			expectedStruct: &runfn.RunFns{
+				Path: "dir",
+				Env:  []string{"FOO=BAR", "BAR"},
+			},
 		},
 	}
 
@@ -338,9 +355,6 @@ apiVersion: v1
 				if !assert.Equal(t, tt.network, r.RunFns.Network) {
 					t.FailNow()
 				}
-				if !assert.Equal(t, tt.networkName, r.RunFns.NetworkName) {
-					t.FailNow()
-				}
 			} else {
 				if !assert.Equal(t, false, r.RunFns.Network) {
 					t.FailNow()
@@ -385,5 +399,4 @@ apiVersion: v1
 
 		})
 	}
-
 }

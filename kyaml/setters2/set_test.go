@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/go-openapi/spec"
 	"github.com/stretchr/testify/assert"
 	"sigs.k8s.io/kustomize/kyaml/openapi"
 	"sigs.k8s.io/kustomize/kyaml/yaml"
@@ -125,7 +126,7 @@ metadata:
 		},
 		{
 			name:        "set-foo-no-type",
-			description: "if a type is not specified for a setter, keep the existing quoting",
+			description: "if a type is not specified for a setter or k8s schema, keep existing quoting",
 			setter:      "foo",
 			openapi: `
 openAPI:
@@ -137,16 +138,16 @@ openAPI:
           value: "4"
  `,
 			input: `
-apiVersion: apps/v1
-kind: Deployment
+apiVersion: custom/v1
+kind: Example
 metadata:
   name: nginx-deployment
   annotations:
     foo: 3 # {"$ref": "#/definitions/io.k8s.cli.setters.foo"}
  `,
 			expected: `
-apiVersion: apps/v1
-kind: Deployment
+apiVersion: custom/v1
+kind: Example
 metadata:
   name: nginx-deployment
   annotations:
@@ -667,6 +668,68 @@ spec:
   - "3"
  `,
 		},
+		{
+			name:        "set-with-invalid-type-int",
+			description: "if a type is set to int instead of integer, we accept it",
+			setter:      "foo",
+			openapi: `
+openAPI:
+  definitions:
+    io.k8s.cli.setters.foo:
+      x-k8s-cli:
+        setter:
+          name: foo
+          value: "4"
+      type: int
+ `,
+			input: `
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nginx-deployment
+  annotations:
+    foo: 3 # {"$ref": "#/definitions/io.k8s.cli.setters.foo"}
+ `,
+			expected: `
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nginx-deployment
+  annotations:
+    foo: 4 # {"$ref": "#/definitions/io.k8s.cli.setters.foo"}
+ `,
+		},
+		{
+			name:        "set-with-invalid-type-bool",
+			description: "if a type is set to bool instead of boolean, we accept it",
+			setter:      "foo",
+			openapi: `
+openAPI:
+  definitions:
+    io.k8s.cli.setters.foo:
+      x-k8s-cli:
+        setter:
+          name: foo
+          value: "true"
+      type: bool
+ `,
+			input: `
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nginx-deployment
+  annotations:
+    foo: false # {"$ref": "#/definitions/io.k8s.cli.setters.foo"}
+ `,
+			expected: `
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nginx-deployment
+  annotations:
+    foo: true # {"$ref": "#/definitions/io.k8s.cli.setters.foo"}
+ `,
+		},
 	}
 	for i := range tests {
 		test := tests[i]
@@ -891,7 +954,7 @@ func initSchema(t *testing.T, s string) {
 	openapi.ResetOpenAPI()
 
 	// add the json schema to the global schema
-	_, err = openapi.AddSchema(j)
+	err = openapi.AddSchema(j)
 	if !assert.NoError(t, err) {
 		t.FailNow()
 	}
@@ -926,6 +989,8 @@ openAPI:
         setter:
           name: replicas
           value: "4"
+          required: true
+          isSet: true
     io.k8s.cli.setters.no-match-2':
       x-k8s-cli:
         setter:
@@ -945,6 +1010,8 @@ openAPI:
         setter:
           name: replicas
           value: "3"
+          required: true
+          isSet: true
     io.k8s.cli.setters.no-match-2':
       x-k8s-cli:
         setter:
@@ -973,6 +1040,7 @@ openAPI:
         setter:
           name: replicas
           value: "3"
+          isSet: true
 `,
 		},
 		{
@@ -1012,6 +1080,7 @@ openAPI:
         setter:
           name: replicas
           value: "3"
+          isSet: true
       description: hello world
     io.k8s.cli.setters.no-match-2':
       x-k8s-cli:
@@ -1058,6 +1127,7 @@ openAPI:
           name: replicas
           value: "3"
           setBy: carl
+          isSet: true
     io.k8s.cli.setters.no-match-2':
       x-k8s-cli:
         setter:
@@ -1105,6 +1175,7 @@ openAPI:
         setter:
           name: replicas
           value: "3"
+          isSet: true
     io.k8s.cli.setters.no-match-2':
       x-k8s-cli:
         setter:
@@ -1158,6 +1229,7 @@ openAPI:
           enumValues:
             foo: bar
             baz: biz
+          isSet: true
     io.k8s.cli.setters.no-match-2':
       x-k8s-cli:
         setter:
@@ -1199,7 +1271,7 @@ openAPI:
 		{
 			name:   "error",
 			setter: "replicas",
-			err:    "no setter replicas found",
+			err:    `setter "replicas" is not found`,
 			input: `
 openAPI:
   definitions:
@@ -1244,6 +1316,7 @@ openAPI:
         setter:
           name: args
           listValues: ["1"]
+          required: true
  `,
 			expected: `
 openAPI:
@@ -1254,6 +1327,8 @@ openAPI:
         setter:
           name: args
           listValues: ["2", "3", "4"]
+          required: true
+          isSet: true
 `,
 		},
 	}
@@ -1294,7 +1369,192 @@ openAPI:
 	}
 }
 
-func TestJoinCompositeStrings(t *testing.T) {
-	input := []string{"10", "true", "hi", "1.1", "1.8.1"}
-	assert.Equal(t, `10,true,"hi",1.1,"1.8.1"`, JoinCompositeStrings(input))
+func TestValidateAgainstSchema(t *testing.T) {
+	maxLength := int64(3)
+
+	testCases := []struct {
+		name             string
+		setter           *setter
+		schema           spec.SchemaProps
+		shouldValidate   bool
+		expectedErrorMsg string
+	}{
+		{
+			name: "no schema",
+			setter: &setter{
+				Name:  "foo",
+				Value: "bar",
+			},
+			schema:         spec.SchemaProps{},
+			shouldValidate: true,
+		},
+		{
+			name: "simple string value",
+			setter: &setter{
+				Name:  "foo",
+				Value: "bar",
+			},
+			schema: spec.SchemaProps{
+				Type: []string{"string"},
+			},
+			shouldValidate: true,
+		},
+		{
+			name: "simple bool value",
+			setter: &setter{
+				Name:  "foo",
+				Value: "false",
+			},
+			schema: spec.SchemaProps{
+				Type: []string{"boolean"},
+			},
+			shouldValidate: true,
+		},
+		{
+			name: "simple null value",
+			setter: &setter{
+				Name:  "foo",
+				Value: "null",
+			},
+			schema: spec.SchemaProps{
+				Type: []string{"null"},
+			},
+			shouldValidate: true,
+		},
+		{
+			name: "bool value in yaml but not openapi",
+			setter: &setter{
+				Name:  "foo",
+				Value: "yes",
+			},
+			schema: spec.SchemaProps{
+				Type: []string{"string"},
+			},
+			shouldValidate: true,
+		},
+		{
+			name: "number value should be accepted as integer",
+			setter: &setter{
+				Name:  "foo",
+				Value: "45",
+			},
+			schema: spec.SchemaProps{
+				Type: []string{"integer"},
+			},
+			shouldValidate: true,
+		},
+		{
+			name: "string type allows string-specific validations",
+			setter: &setter{
+				Name:  "foo",
+				Value: "1234",
+			},
+			schema: spec.SchemaProps{
+				Type:      []string{"string"},
+				MaxLength: &maxLength,
+			},
+			shouldValidate:   false,
+			expectedErrorMsg: "foo in body should be at most 3 chars long",
+		},
+		{
+			name: "list with int values",
+			setter: &setter{
+				Name:       "foo",
+				ListValues: []string{"123", "456"},
+			},
+			schema: spec.SchemaProps{
+				Type: []string{"array"},
+				Items: &spec.SchemaOrArray{
+					Schema: &spec.Schema{
+						SchemaProps: spec.SchemaProps{
+							Type: []string{"integer"},
+						},
+					},
+				},
+			},
+			shouldValidate: true,
+		},
+		{
+			name: "list expecting int values, but with a string",
+			setter: &setter{
+				Name:       "foo",
+				ListValues: []string{"123", "456", "abc"},
+			},
+			schema: spec.SchemaProps{
+				Type: []string{"array"},
+				Items: &spec.SchemaOrArray{
+					Schema: &spec.Schema{
+						SchemaProps: spec.SchemaProps{
+							Type: []string{"integer"},
+						},
+					},
+				},
+			},
+			shouldValidate:   false,
+			expectedErrorMsg: "foo in body must be of type integer",
+		},
+		{
+			name: "all values should satisfy type string",
+			setter: &setter{
+				Name:  "foo",
+				Value: "1234",
+			},
+			schema: spec.SchemaProps{
+				Type: []string{"string"},
+			},
+			shouldValidate: true,
+		},
+		{
+			name: "all values should satisfy type string even in arrays",
+			setter: &setter{
+				Name:       "foo",
+				ListValues: []string{"123", "456"},
+			},
+			schema: spec.SchemaProps{
+				Type: []string{"array"},
+				Items: &spec.SchemaOrArray{
+					Schema: &spec.Schema{
+						SchemaProps: spec.SchemaProps{
+							Type: []string{"string"},
+						},
+					},
+				},
+			},
+			shouldValidate: true,
+		},
+		{
+			name: "List values without any schema",
+			setter: &setter{
+				Name:       "foo",
+				ListValues: []string{"123", "true", "abc"},
+			},
+			schema:         spec.SchemaProps{},
+			shouldValidate: true,
+		},
+	}
+
+	for i := range testCases {
+		test := testCases[i]
+		t.Run(test.name, func(t *testing.T) {
+			ext := &CliExtension{
+				Setter: test.setter,
+			}
+
+			schema := &spec.Schema{
+				SchemaProps: test.schema,
+			}
+
+			err := validateAgainstSchema(ext, schema)
+
+			if test.shouldValidate {
+				assert.NoError(t, err)
+				return
+			}
+
+			if !assert.Error(t, err) {
+				t.FailNow()
+			}
+			assert.Contains(t, err.Error(), test.expectedErrorMsg)
+		})
+	}
 }

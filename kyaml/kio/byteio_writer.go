@@ -4,6 +4,7 @@
 package kio
 
 import (
+	"encoding/json"
 	"io"
 
 	"sigs.k8s.io/kustomize/kyaml/errors"
@@ -71,15 +72,8 @@ func (w ByteWriter) Write(nodes []*yaml.RNode) error {
 			}
 		}
 
-		// TODO(pwittrock): factor this into a a common module for pruning empty values
-		_, err := nodes[i].Pipe(yaml.Lookup("metadata"), yaml.FieldClearer{
-			Name: "annotations", IfEmpty: true})
-		if err != nil {
-			return errors.Wrap(err)
-		}
-		_, err = nodes[i].Pipe(yaml.FieldClearer{Name: "metadata", IfEmpty: true})
-		if err != nil {
-			return errors.Wrap(err)
+		if err := yaml.ClearEmptyAnnotations(nodes[i]); err != nil {
+			return err
 		}
 
 		if w.Style != 0 {
@@ -90,9 +84,8 @@ func (w ByteWriter) Write(nodes []*yaml.RNode) error {
 	// don't wrap the elements
 	if w.WrappingKind == "" {
 		for i := range nodes {
-			err := encoder.Encode(nodes[i].Document())
-			if err != nil {
-				return errors.Wrap(err)
+			if err := w.encode(encoder, nodes[i].Document()); err != nil {
+				return err
 			}
 		}
 		return nil
@@ -125,7 +118,23 @@ func (w ByteWriter) Write(nodes []*yaml.RNode) error {
 	for i := range nodes {
 		items.Content = append(items.Content, nodes[i].YNode())
 	}
-	err := errors.Wrap(encoder.Encode(doc))
+	err := w.encode(encoder, doc)
 	yaml.UndoSerializationHacksOnNodes(nodes)
 	return err
+}
+
+// encode encodes the input document node to appropriate node format
+func (w ByteWriter) encode(encoder *yaml.Encoder, doc *yaml.Node) error {
+	rNode := &yaml.RNode{}
+	rNode.SetYNode(doc)
+	str, err := rNode.String()
+	if err != nil {
+		return errors.Wrap(err)
+	}
+	if json.Valid([]byte(str)) {
+		je := json.NewEncoder(w.Writer)
+		je.SetIndent("", "  ")
+		return errors.Wrap(je.Encode(rNode))
+	}
+	return encoder.Encode(doc)
 }

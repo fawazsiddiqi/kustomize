@@ -5,6 +5,8 @@ package runtimeutil
 
 import (
 	"fmt"
+	"os"
+	"sort"
 	"strings"
 
 	"sigs.k8s.io/kustomize/kyaml/yaml"
@@ -17,11 +19,128 @@ const (
 
 var functionAnnotationKeys = []string{FunctionAnnotationKey, oldFunctionAnnotationKey}
 
+// ContainerUser is a type for username/uid used in container
+type ContainerUser string
+
+func (u *ContainerUser) String() string {
+	return string(*u)
+}
+
+func (u *ContainerUser) IsEmpty() bool {
+	return string(*u) == ""
+}
+
+const (
+	UserNobody ContainerUser = "nobody"
+)
+
+// ContainerNetworkName is a type for network name used in container
+type ContainerNetworkName string
+
+const (
+	NetworkNameNone ContainerNetworkName = "none"
+	NetworkNameHost ContainerNetworkName = "host"
+)
+const defaultEnvValue string = "true"
+
+// ContainerEnv defines the environment present in a container.
+type ContainerEnv struct {
+	// EnvVars is a key-value map that will be set as env in container
+	EnvVars map[string]string
+
+	// VarsToExport are only env key. Value will be the value in the host system
+	VarsToExport []string
+}
+
+// GetDockerFlags returns docker run style env flags
+func (ce *ContainerEnv) GetDockerFlags() []string {
+	envs := ce.EnvVars
+	if envs == nil {
+		envs = make(map[string]string)
+	}
+
+	flags := []string{}
+	// return in order to keep consistent among different runs
+	keys := []string{}
+	for k := range envs {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		flags = append(flags, "-e", key+"="+envs[key])
+	}
+
+	for _, key := range ce.VarsToExport {
+		flags = append(flags, "-e", key)
+	}
+
+	return flags
+}
+
+// AddKeyValue adds a key-value pair into the envs
+func (ce *ContainerEnv) AddKeyValue(key, value string) {
+	if ce.EnvVars == nil {
+		ce.EnvVars = make(map[string]string)
+	}
+	ce.EnvVars[key] = value
+}
+
+// HasExportedKey returns true if the key is a exported key
+func (ce *ContainerEnv) HasExportedKey(key string) bool {
+	for _, k := range ce.VarsToExport {
+		if k == key {
+			return true
+		}
+	}
+	return false
+}
+
+// AddKey adds a key into the envs
+func (ce *ContainerEnv) AddKey(key string) {
+	if !ce.HasExportedKey(key) {
+		ce.VarsToExport = append(ce.VarsToExport, key)
+	}
+}
+
+// Raw returns a slice of string which represents the envs.
+// Example: [foo=bar, baz]
+func (ce *ContainerEnv) Raw() []string {
+	var ret []string
+	for k, v := range ce.EnvVars {
+		ret = append(ret, k+"="+v)
+	}
+
+	ret = append(ret, ce.VarsToExport...)
+	return ret
+}
+
+// NewContainerEnv returns a pointer to a new ContainerEnv
+func NewContainerEnv() *ContainerEnv {
+	var ce ContainerEnv
+	ce.EnvVars = make(map[string]string)
+	// default envs
+	ce.EnvVars["LOG_TO_STDERR"] = defaultEnvValue
+	ce.EnvVars["STRUCTURED_RESULTS"] = defaultEnvValue
+	return &ce
+}
+
+// NewContainerEnvFromStringSlice returns a new ContainerEnv pointer with parsing
+// input envStr. envStr example: ["foo=bar", "baz"]
+func NewContainerEnvFromStringSlice(envStr []string) *ContainerEnv {
+	ce := NewContainerEnv()
+	for _, e := range envStr {
+		parts := strings.SplitN(e, "=", 2)
+		if len(parts) == 1 {
+			ce.AddKey(e)
+		} else {
+			ce.AddKeyValue(parts[0], parts[1])
+		}
+	}
+	return ce
+}
+
 // FunctionSpec defines a spec for running a function
 type FunctionSpec struct {
-	// Network is the name of the network to use from a container
-	Network string `json:"network,omitempty" yaml:"network,omitempty"`
-
 	DeferFailure bool `json:"deferFailure,omitempty" yaml:"deferFailure,omitempty"`
 
 	// Container is the spec for running a function as a container
@@ -47,16 +166,16 @@ type ContainerSpec struct {
 	Image string `json:"image,omitempty" yaml:"image,omitempty"`
 
 	// Network defines network specific configuration
-	Network ContainerNetwork `json:"network,omitempty" yaml:"network,omitempty"`
+	Network bool `json:"network,omitempty" yaml:"network,omitempty"`
 
 	// Mounts are the storage or directories to mount into the container
 	StorageMounts []StorageMount `json:"mounts,omitempty" yaml:"mounts,omitempty"`
-}
 
-// ContainerNetwork
-type ContainerNetwork struct {
-	// Required specifies that function requires a network
-	Required bool `json:"required,omitempty" yaml:"required,omitempty"`
+	// User is the username/uid that application runs as in continer
+	User ContainerUser `json:"user,omitempty" yaml:"user,omitempty"`
+
+	// Env is a slice of env string that will be exposed to container
+	Env []string `json:"envs,omitempty" yaml:"envs,omitempty"`
 }
 
 // StarlarkSpec defines how to run a function as a starlark program
@@ -83,10 +202,18 @@ type StorageMount struct {
 
 	// The path where the file or directory is mounted in the container.
 	DstPath string `json:"dst,omitempty" yaml:"dst,omitempty"`
+
+	// Mount in ReadWrite mode if it's explicitly configured
+	// See https://docs.docker.com/storage/bind-mounts/#use-a-read-only-bind-mount
+	ReadWriteMode bool `json:"rw,omitempty" yaml:"rw,omitempty"`
 }
 
 func (s *StorageMount) String() string {
-	return fmt.Sprintf("type=%s,src=%s,dst=%s:ro", s.MountType, s.Src, s.DstPath)
+	mode := ""
+	if !s.ReadWriteMode {
+		mode = ",readonly"
+	}
+	return fmt.Sprintf("type=%s,source=%s,target=%s%s", s.MountType, s.Src, s.DstPath, mode)
 }
 
 // GetFunctionSpec returns the FunctionSpec for a resource.  Returns
@@ -101,7 +228,6 @@ func GetFunctionSpec(n *yaml.RNode) *FunctionSpec {
 	}
 
 	if fn := getFunctionSpecFromAnnotation(n, meta); fn != nil {
-		fn.Network = ""
 		fn.StorageMounts = []StorageMount{}
 		return fn
 	}
@@ -121,19 +247,25 @@ func getFunctionSpecFromAnnotation(n *yaml.RNode, meta yaml.ResourceMeta) *Funct
 	for _, s := range functionAnnotationKeys {
 		fn := meta.Annotations[s]
 		if fn != "" {
-			_ = yaml.Unmarshal([]byte(fn), &fs)
+			err := yaml.Unmarshal([]byte(fn), &fs)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "%v\n", err)
+			}
 			return &fs
 		}
 	}
 	n, err := n.Pipe(yaml.Lookup("metadata", "configFn"))
-	if err != nil || yaml.IsEmpty(n) {
+	if err != nil || yaml.IsMissingOrNull(n) {
 		return nil
 	}
 	s, err := n.String()
 	if err != nil {
-		return nil
+		fmt.Fprintf(os.Stderr, "%v\n", err)
 	}
-	_ = yaml.Unmarshal([]byte(s), &fs)
+	err = yaml.Unmarshal([]byte(s), &fs)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "%v\n", err)
+	}
 	return &fs
 }
 
@@ -142,17 +274,21 @@ func StringToStorageMount(s string) StorageMount {
 	options := strings.Split(s, ",")
 	for _, option := range options {
 		keyVal := strings.SplitN(option, "=", 2)
-		m[keyVal[0]] = keyVal[1]
+		if len(keyVal) == 2 {
+			m[keyVal[0]] = keyVal[1]
+		}
 	}
 	var sm StorageMount
 	for key, value := range m {
 		switch {
 		case key == "type":
 			sm.MountType = value
-		case key == "src":
+		case key == "src" || key == "source":
 			sm.Src = value
-		case key == "dst":
+		case key == "dst" || key == "target":
 			sm.DstPath = value
+		case key == "rw" && value == "true":
+			sm.ReadWriteMode = true
 		}
 	}
 	return sm

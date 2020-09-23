@@ -4,6 +4,7 @@
 package setters2
 
 import (
+	"reflect"
 	"strings"
 
 	"github.com/go-openapi/spec"
@@ -30,6 +31,15 @@ type Add struct {
 
 	// Ref is the OpenAPI reference to set on the matching fields as a comment.
 	Ref string
+
+	// ListValues are the value of a list setter.
+	ListValues []string
+
+	// Type is the type of the setter value
+	Type string
+
+	// Count is the number of fields the setter applies to
+	Count int
 }
 
 // Filter implements yaml.Filter
@@ -48,17 +58,62 @@ func (a *Add) visitSequence(_ *yaml.RNode, _ string, _ *openapi.ResourceSchema) 
 	return nil
 }
 
+// visitMapping implements visitor
+// visitMapping visits the fields in input MappingNode and adds setter/subst ref
+// if the path path spec matches with input FiledName
+func (a *Add) visitMapping(object *yaml.RNode, p string, _ *openapi.ResourceSchema) error {
+	return object.VisitFields(func(node *yaml.MapNode) error {
+		if node.Value.YNode().Kind != yaml.SequenceNode {
+			return nil
+		}
+
+		key, err := node.Key.String()
+		if err != nil {
+			return err
+		}
+
+		// derive the list values for the sequence node to write it to openAPI definitions
+		var values []string
+		for _, sc := range node.Value.Content() {
+			values = append(values, sc.Value)
+		}
+
+		// pathToKey refers to the path address of the key node ex: metadata.annotations
+		// p is the path till parent node, pathToKey is obtained by appending child key
+		pathToKey := p + "." + strings.Trim(key, "\n")
+		if a.FieldName != "" && strings.HasSuffix(pathToKey, a.FieldName) {
+			// check if there are different values for field path before adding ref to the field
+			if len(a.ListValues) > 0 && !reflect.DeepEqual(values, a.ListValues) {
+				return errors.Errorf("setters can only be created for fields with same values, "+
+					"encountered different array values for specified field path: %s, %s", values, a.ListValues)
+			}
+			a.ListValues = values
+			a.Count++
+			return a.addRef(node.Key)
+		}
+		return nil
+	})
+}
+
 // visitScalar implements visitor
 // visitScalar will set the field metadata on each scalar field whose name + value match
-func (a *Add) visitScalar(object *yaml.RNode, p string, _ *openapi.ResourceSchema) error {
+func (a *Add) visitScalar(object *yaml.RNode, p string, _, _ *openapi.ResourceSchema) error {
 	// check if the field matches
+	if a.Type == "array" {
+		return nil
+	}
 	if a.FieldName != "" && !strings.HasSuffix(p, a.FieldName) {
 		return nil
 	}
 	if a.FieldValue != "" && a.FieldValue != object.YNode().Value {
 		return nil
 	}
+	a.Count++
+	return a.addRef(object)
+}
 
+// addRef adds the setter/subst ref to the object node as a line comment
+func (a *Add) addRef(object *yaml.RNode) error {
 	// read the field metadata
 	fm := fieldmeta.FieldMeta{}
 	if err := fm.Read(object); err != nil {
@@ -78,20 +133,6 @@ func (a *Add) visitScalar(object *yaml.RNode, p string, _ *openapi.ResourceSchem
 	}
 	return nil
 }
-
-const (
-	// CLIDefinitionsPrefix is the prefix for cli definition keys.
-	CLIDefinitionsPrefix = "io.k8s.cli."
-
-	// SetterDefinitionPrefix is the prefix for setter definition keys.
-	SetterDefinitionPrefix = CLIDefinitionsPrefix + "setters."
-
-	// SubstitutionDefinitionPrefix is the prefix for substitution definition keys.
-	SubstitutionDefinitionPrefix = CLIDefinitionsPrefix + "substitutions."
-
-	// DefinitionsPrefix is the prefix used to reference definitions in the OpenAPI
-	DefinitionsPrefix = "#/definitions/"
-)
 
 // SetterDefinition may be used to update a files OpenAPI definitions with a new setter.
 type SetterDefinition struct {
@@ -126,6 +167,11 @@ type SetterDefinition struct {
 	// Example -- may be used for t-shirt sizing values by allowing cpu to be
 	// set to small, medium or large, and then mapping these values to cpu values -- 0.5, 2, 8
 	EnumValues map[string]string `yaml:"enumValues,omitempty"`
+
+	// Required indicates that the setter must be set by package consumer before
+	// live apply/preview. This field is added to the setter definition to record
+	// the package publisher's intent to make the setter required to be set.
+	Required bool `yaml:"required,omitempty"`
 }
 
 func (sd SetterDefinition) AddToFile(path string) error {
@@ -133,7 +179,7 @@ func (sd SetterDefinition) AddToFile(path string) error {
 }
 
 func (sd SetterDefinition) Filter(object *yaml.RNode) (*yaml.RNode, error) {
-	key := SetterDefinitionPrefix + sd.Name
+	key := fieldmeta.SetterDefinitionPrefix + sd.Name
 
 	definitions, err := object.Pipe(yaml.LookupCreate(
 		yaml.MappingNode, openapi.SupplementaryOpenAPIFieldName, "definitions"))
@@ -235,7 +281,7 @@ func (sd SubstitutionDefinition) Filter(object *yaml.RNode) (*yaml.RNode, error)
 	}
 
 	// lookup or create the definition for the substitution
-	defKey := SubstitutionDefinitionPrefix + sd.Name
+	defKey := fieldmeta.SubstitutionDefinitionPrefix + sd.Name
 	def, err := object.Pipe(yaml.LookupCreate(
 		yaml.MappingNode, openapi.SupplementaryOpenAPIFieldName, "definitions", defKey, "x-k8s-cli"))
 	if err != nil {

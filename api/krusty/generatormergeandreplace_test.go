@@ -56,7 +56,7 @@ spec:
               app: nginx
 `)
 	th.WriteF("/app/base/deployment.yaml", `
-apiVersion: apps/v1beta2
+apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: nginx
@@ -92,7 +92,7 @@ spec:
     org: example.com
     team: foo
 ---
-apiVersion: apps/v1beta2
+apiVersion: apps/v1
 kind: Deployment
 metadata:
   annotations:
@@ -150,8 +150,6 @@ spec:
 
 func makeBaseWithGenerators(th kusttest_test.Harness) {
 	th.WriteK("/app", `
-apiVersion: kustomize.config.k8s.io/v1beta1
-kind: Kustomization
 namePrefix: team-foo-
 commonLabels:
   app: mynginx
@@ -173,7 +171,7 @@ secretGenerator:
   - password=somepw
 `)
 	th.WriteF("/app/deployment.yaml", `
-apiVersion: apps/v1beta2
+apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: nginx
@@ -218,7 +216,7 @@ func TestBaseWithGeneratorsAlone(t *testing.T) {
 	makeBaseWithGenerators(th)
 	m := th.Run("/app", th.MakeDefaultOptions())
 	th.AssertActualEqualsExpected(m, `
-apiVersion: apps/v1beta2
+apiVersion: apps/v1
 kind: Deployment
 metadata:
   annotations:
@@ -253,7 +251,7 @@ spec:
       - emptyDir: {}
         name: nginx-persistent-storage
       - configMap:
-          name: team-foo-configmap-in-base-bbdmdh7m8t
+          name: team-foo-configmap-in-base-798k5k7g9f
         name: configmap-in-base
 ---
 apiVersion: v1
@@ -285,7 +283,7 @@ metadata:
     app: mynginx
     org: example.com
     team: foo
-  name: team-foo-configmap-in-base-bbdmdh7m8t
+  name: team-foo-configmap-in-base-798k5k7g9f
 ---
 apiVersion: v1
 data:
@@ -299,7 +297,7 @@ metadata:
     app: mynginx
     org: example.com
     team: foo
-  name: team-foo-secret-in-base-tkm7hhtf8d
+  name: team-foo-secret-in-base-bgd6bkgdm2
 type: Opaque
 `)
 }
@@ -308,7 +306,7 @@ func TestMergeAndReplaceGenerators(t *testing.T) {
 	th := kusttest_test.MakeHarness(t)
 	makeBaseWithGenerators(th)
 	th.WriteF("/overlay/deployment.yaml", `
-apiVersion: apps/v1beta2
+apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: nginx
@@ -325,8 +323,6 @@ spec:
         name: configmap-in-overlay
 `)
 	th.WriteK("/overlay", `
-apiVersion: kustomize.config.k8s.io/v1beta1
-kind: Kustomization
 namePrefix: staging-
 commonLabels:
   env: staging
@@ -351,7 +347,7 @@ secretGenerator:
 `)
 	m := th.Run("/overlay", th.MakeDefaultOptions())
 	th.AssertActualEqualsExpected(m, `
-apiVersion: apps/v1beta2
+apiVersion: apps/v1
 kind: Deployment
 metadata:
   annotations:
@@ -390,11 +386,11 @@ spec:
           pdName: nginx-persistent-storage
         name: nginx-persistent-storage
       - configMap:
-          name: staging-configmap-in-overlay-k7cbc75tg8
-        name: configmap-in-overlay
-      - configMap:
-          name: staging-team-foo-configmap-in-base-gh9d7t85gb
+          name: staging-team-foo-configmap-in-base-hc6g9dk6g9
         name: configmap-in-base
+      - configMap:
+          name: staging-configmap-in-overlay-dc6fm46dhm
+        name: configmap-in-overlay
 ---
 apiVersion: v1
 kind: Service
@@ -428,7 +424,7 @@ metadata:
     env: staging
     org: example.com
     team: override-foo
-  name: staging-team-foo-configmap-in-base-gh9d7t85gb
+  name: staging-team-foo-configmap-in-base-hc6g9dk6g9
 ---
 apiVersion: v1
 data:
@@ -444,7 +440,7 @@ metadata:
     env: staging
     org: example.com
     team: override-foo
-  name: staging-team-foo-secret-in-base-c8db7gk2m2
+  name: staging-team-foo-secret-in-base-k2k4692t9g
 type: Opaque
 ---
 apiVersion: v1
@@ -455,7 +451,7 @@ metadata:
   labels:
     env: staging
     team: override-foo
-  name: staging-configmap-in-overlay-k7cbc75tg8
+  name: staging-configmap-in-overlay-dc6fm46dhm
 `)
 }
 
@@ -490,7 +486,7 @@ data:
   key: value
 kind: ConfigMap
 metadata:
-  name: test-t5t4md8fdm
+  name: test-t757gk2bmf
   namespace: default
 ---
 apiVersion: v1
@@ -498,7 +494,7 @@ data:
   key: value
 kind: ConfigMap
 metadata:
-  name: test-t5t4md8fdm
+  name: test-t757gk2bmf
   namespace: kube-system
 ---
 apiVersion: v1
@@ -507,7 +503,7 @@ data:
   username: YWRtaW4=
 kind: Secret
 metadata:
-  name: test-h65t9hg6kc
+  name: test-bgd6bkgdm2
   namespace: default
 type: Opaque
 ---
@@ -517,7 +513,7 @@ data:
   username: YWRtaW4=
 kind: Secret
 metadata:
-  name: test-h65t9hg6kc
+  name: test-bgd6bkgdm2
   namespace: kube-system
 type: Opaque
 `)
@@ -541,7 +537,7 @@ configMapGenerator:
 	if err == nil {
 		t.Fatalf("expected error")
 	}
-	if !strings.Contains(err.Error(), "must merge or replace") {
+	if !strings.Contains(err.Error(), "behavior must be merge or replace") {
 		t.Fatalf("unexpected error %v", err)
 	}
 }
@@ -566,7 +562,7 @@ secretGenerator:
 	if err == nil {
 		t.Fatalf("expected error")
 	}
-	if !strings.Contains(err.Error(), "must merge or replace") {
+	if !strings.Contains(err.Error(), "behavior must be merge or replace") {
 		t.Fatalf("unexpected error %v", err)
 	}
 }

@@ -38,36 +38,69 @@ type Loader interface {
 	Cleanup() error
 }
 
-// Kunstructured allows manipulation of k8s objects
-// that do not have Golang structs.
+// Kunstructured represents a Kubernetes Resource Model object.
 type Kunstructured interface {
-	Map() map[string]interface{}
-	SetMap(map[string]interface{})
+	// Several uses.
 	Copy() Kunstructured
-	GetFieldValue(string) (interface{}, error)
-	GetString(string) (string, error)
-	GetStringSlice(string) ([]string, error)
-	GetBool(path string) (bool, error)
-	GetFloat64(path string) (float64, error)
-	GetInt64(path string) (int64, error)
-	GetSlice(path string) ([]interface{}, error)
-	GetStringMap(path string) (map[string]string, error)
-	GetMap(path string) (map[string]interface{}, error)
-	MarshalJSON() ([]byte, error)
-	UnmarshalJSON([]byte) error
-	GetGvk() resid.Gvk
-	SetGvk(resid.Gvk)
-	GetKind() string
-	GetName() string
-	SetName(string)
-	SetNamespace(string)
-	GetLabels() map[string]string
-	SetLabels(map[string]string)
+
+	// Used by Resource.Replace, which in turn is used in many places, e.g.
+	//  - resource.Resource.Merge
+	//  - resWrangler.appendReplaceOrMerge (AbsorbAll)
+	//  - api.internal.k8sdeps.transformer.patch.conflictdetector
 	GetAnnotations() map[string]string
-	SetAnnotations(map[string]string)
-	MatchesLabelSelector(selector string) (bool, error)
+
+	// Used by ResAccumulator and ReplacementTransformer.
+	GetFieldValue(string) (interface{}, error)
+
+	// Used by Resource.OrgId
+	GetGvk() resid.Gvk
+
+	// Used by resource.Factory.SliceFromBytes
+	GetKind() string
+
+	// Used by Resource.Replace
+	GetLabels() map[string]string
+
+	// Used by Resource.CurId and resource factory.
+	GetName() string
+
+	// Used by special case code in
+	// ResMap.SubsetThatCouldBeReferencedByResource
+	GetSlice(path string) ([]interface{}, error)
+
+	// GetString returns the value of a string field.
+	// Used by Resource.GetNamespace
+	GetString(string) (string, error)
+
+	// Several uses.
+	Map() map[string]interface{}
+
+	// Used by Resource.AsYAML and Resource.String
+	MarshalJSON() ([]byte, error)
+
+	// Used by resWrangler.Select
 	MatchesAnnotationSelector(selector string) (bool, error)
-	Patch(Kunstructured) error
+
+	// Used by resWrangler.Select
+	MatchesLabelSelector(selector string) (bool, error)
+
+	// Used by Resource.Replace.
+	SetAnnotations(map[string]string)
+
+	// Used by PatchStrategicMergeTransformer.
+	SetGvk(resid.Gvk)
+
+	// Used by Resource.Replace and used to remove "validated by" labels.
+	SetLabels(map[string]string)
+
+	// Used by Resource.Replace.
+	SetName(string)
+
+	// Used by Resource.Replace.
+	SetNamespace(string)
+
+	// Needed, for now, by kyaml/filtersutil.ApplyToJSON.
+	UnmarshalJSON([]byte) error
 }
 
 // KunstructuredFactory makes instances of Kunstructured.

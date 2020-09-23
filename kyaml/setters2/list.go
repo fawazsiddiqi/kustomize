@@ -8,14 +8,19 @@ import (
 	"strings"
 
 	"sigs.k8s.io/kustomize/kyaml/errors"
+	"sigs.k8s.io/kustomize/kyaml/fieldmeta"
 	"sigs.k8s.io/kustomize/kyaml/kio"
 	"sigs.k8s.io/kustomize/kyaml/openapi"
 	"sigs.k8s.io/kustomize/kyaml/yaml"
 )
 
 // List lists the setters specified in the OpenAPI
+// excludes the subpackages which contain file with
+// name OpenAPIFileName in them
 type List struct {
 	Name string
+
+	OpenAPIFileName string
 
 	Setters []SetterDefinition
 
@@ -52,7 +57,7 @@ func (l *List) listSetters(object *yaml.RNode, resourcePath string) error {
 	if err != nil {
 		return err
 	}
-	if yaml.IsEmpty(def) {
+	if yaml.IsMissingOrNull(def) {
 		return nil
 	}
 
@@ -63,7 +68,7 @@ func (l *List) listSetters(object *yaml.RNode, resourcePath string) error {
 		// the definition key -- contains the setter name
 		key := node.Key.YNode().Value
 
-		if !strings.HasPrefix(key, SetterDefinitionPrefix) {
+		if !strings.HasPrefix(key, fieldmeta.SetterDefinitionPrefix) {
 			// not a setter -- doesn't have the right prefix
 			return nil
 		}
@@ -72,7 +77,7 @@ func (l *List) listSetters(object *yaml.RNode, resourcePath string) error {
 		if err != nil {
 			return err
 		}
-		if yaml.IsEmpty(setterNode) {
+		if yaml.IsMissingOrNull(setterNode) {
 			// has the setter prefix, but missing the setter extension
 			return errors.Errorf("missing x-k8s-cli.setter for %s", key)
 		}
@@ -125,7 +130,7 @@ func (l *List) listSubst(object *yaml.RNode) error {
 	if err != nil {
 		return err
 	}
-	if yaml.IsEmpty(def) {
+	if yaml.IsMissingOrNull(def) {
 		return nil
 	}
 
@@ -136,7 +141,7 @@ func (l *List) listSubst(object *yaml.RNode) error {
 		// the definition key -- contains the substitution name
 		key := node.Key.YNode().Value
 
-		if !strings.HasPrefix(key, SubstitutionDefinitionPrefix) {
+		if !strings.HasPrefix(key, fieldmeta.SubstitutionDefinitionPrefix) {
 			// not a substitution -- doesn't have the right prefix
 			return nil
 		}
@@ -145,7 +150,7 @@ func (l *List) listSubst(object *yaml.RNode) error {
 		if err != nil {
 			return err
 		}
-		if yaml.IsEmpty(substNode) {
+		if yaml.IsMissingOrNull(substNode) {
 			// has the substitution prefix, but missing the setter extension
 			return errors.Errorf("missing x-k8s-cli.substitution for %s", key)
 		}
@@ -180,10 +185,13 @@ func (l *List) listSubst(object *yaml.RNode) error {
 }
 
 // count returns the number of fields set by the setter with name
+// this excludes all the subpackages with openAPI file in them
+// set filter is leveraged for this but the resources are not written
+// back to files as only LocalPackageReader is invoked and not writer
 func (l *List) count(path, name string) (int, error) {
 	s := &Set{Name: name}
 	err := kio.Pipeline{
-		Inputs:  []kio.Reader{&kio.LocalPackageReader{PackagePath: path}},
+		Inputs:  []kio.Reader{&kio.LocalPackageReader{PackagePath: path, PackageFileName: l.OpenAPIFileName}},
 		Filters: []kio.Filter{kio.FilterAll(s)},
 	}.Execute()
 

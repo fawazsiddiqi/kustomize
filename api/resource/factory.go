@@ -69,10 +69,10 @@ func (rf *Factory) makeOne(
 		o = types.NewGenArgs(nil)
 	}
 	r := &Resource{
-		Kunstructured: u,
-		options:       o,
+		kunStr:  u,
+		options: o,
 	}
-	return r.setOriginalName(r.GetName()).setOriginalNs(r.GetNamespace())
+	return r.setOriginalName(r.kunStr.GetName()).setOriginalNs(r.GetNamespace())
 }
 
 // SliceFromPatches returns a slice of resources given a patch path
@@ -142,6 +142,22 @@ func (rf *Factory) SliceFromBytes(in []byte) ([]*Resource, error) {
 		} else {
 			result = append(result, rf.FromKunstructured(u))
 		}
+	}
+	return result, nil
+}
+
+// SliceFromBytesWithNames unmarshals bytes into a Resource slice with specified original
+// name.
+func (rf *Factory) SliceFromBytesWithNames(names []string, in []byte) ([]*Resource, error) {
+	result, err := rf.SliceFromBytes(in)
+	if err != nil {
+		return nil, err
+	}
+	if len(names) != len(result) {
+		return nil, fmt.Errorf("number of names doesn't match number of resources")
+	}
+	for i, res := range result {
+		res.originalName = names[i]
 	}
 	return result, nil
 }

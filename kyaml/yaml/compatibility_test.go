@@ -23,6 +23,7 @@ func TestIsYaml1_1NonString(t *testing.T) {
 		{val: "2", expected: true},
 		{val: "true", expected: true},
 		{val: "1.0\nhello", expected: false}, // multiline strings should always be false
+		{val: "", expected: false},           // empty string should be considered a string
 	}
 
 	for k := range valueToTagMap {
@@ -111,9 +112,9 @@ var valueToTagMap = func() map[string]string {
 	val := map[string]string{}
 
 	// https://yaml.org/type/null.html
-	values := []string{"", "~", "null", "Null", "NULL"}
+	values := []string{"~", "null", "Null", "NULL"}
 	for i := range values {
-		val[values[i]] = "!!null"
+		val[values[i]] = yaml.NodeTagNull
 	}
 
 	// https://yaml.org/type/bool.html
@@ -121,7 +122,7 @@ var valueToTagMap = func() map[string]string {
 		"y", "Y", "yes", "Yes", "YES", "true", "True", "TRUE", "on", "On", "ON", "n", "N", "no",
 		"No", "NO", "false", "False", "FALSE", "off", "Off", "OFF"}
 	for i := range values {
-		val[values[i]] = "!!bool"
+		val[values[i]] = yaml.NodeTagBool
 	}
 
 	// https://yaml.org/type/float.html
@@ -129,7 +130,7 @@ var valueToTagMap = func() map[string]string {
 		".nan", ".NaN", ".NAN", ".inf", ".Inf", ".INF",
 		"+.inf", "+.Inf", "+.INF", "-.inf", "-.Inf", "-.INF"}
 	for i := range values {
-		val[values[i]] = "!!float"
+		val[values[i]] = yaml.NodeTagFloat
 	}
 
 	return val

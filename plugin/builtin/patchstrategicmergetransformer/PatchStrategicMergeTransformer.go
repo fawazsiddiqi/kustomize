@@ -5,10 +5,10 @@
 package main
 
 import (
-	"encoding/json"
 	"fmt"
-	kyaml "sigs.k8s.io/kustomize/kyaml/yaml"
+	"strings"
 
+	"github.com/pkg/errors"
 	"sigs.k8s.io/kustomize/api/filters/patchstrategicmerge"
 	"sigs.k8s.io/kustomize/api/resmap"
 	"sigs.k8s.io/kustomize/api/resource"
@@ -22,8 +22,6 @@ type plugin struct {
 	loadedPatches []*resource.Resource
 	Paths         []types.PatchStrategicMerge `json:"paths,omitempty" yaml:"paths,omitempty"`
 	Patches       string                      `json:"patches,omitempty" yaml:"patches,omitempty"`
-
-	YAMLSupport bool `json:"yamlSupport,omitempty" yaml:"yamlSupport,omitempty"`
 }
 
 //noinspection GoUnusedGlobalVariable
@@ -70,7 +68,7 @@ func (p *plugin) Config(
 }
 
 func (p *plugin) Transform(m resmap.ResMap) error {
-	patches, err := p.h.ResmapFactory().MergePatches(p.loadedPatches)
+	patches, err := p.h.ResmapFactory().Merge(p.loadedPatches)
 	if err != nil {
 		return err
 	}
@@ -79,38 +77,44 @@ func (p *plugin) Transform(m resmap.ResMap) error {
 		if err != nil {
 			return err
 		}
-		if !p.YAMLSupport {
-			err = target.Patch(patch.Kunstructured)
+		patchCopy := patch.DeepCopy()
+		patchCopy.SetName(target.GetName())
+		patchCopy.SetNamespace(target.GetNamespace())
+		patchCopy.SetGvk(target.GetGvk())
+		node, err := filtersutil.GetRNode(patchCopy)
+		if err != nil {
+			return err
+		}
+		err = filtersutil.ApplyToJSON(patchstrategicmerge.Filter{
+			Patch: node,
+		}, target)
+		if err != nil {
+			// Check for an error string from UnmarshalJSON that's indicative
+			// of an object that's missing basic KRM fields, and thus may have been
+			// entirely deleted (an acceptable outcome).  This error handling should
+			// be deleted along with use of ResMap and apimachinery functions like
+			// UnmarshalJSON.
+			if !strings.Contains(err.Error(), "Object 'Kind' is missing") {
+				// Some unknown error, let it through.
+				return err
+			}
+			if len(target.Map()) != 0 {
+				return errors.Wrapf(
+					err, "with unexpectedly non-empty object map of size %d",
+					len(target.Map()))
+			}
+			// Fall through to handle deleted object.
+		}
+		if len(target.Map()) == 0 {
+			// This means all fields have been removed from the object.
+			// This can happen if a patch required deletion of the
+			// entire resource (not just a part of it).  This means
+			// the overall resmap must shrink by one.
+			err = m.Remove(target.CurId())
 			if err != nil {
 				return err
 			}
-			// remove the resource from resmap
-			// when the patch is to $patch: delete that target
-			if len(target.Map()) == 0 {
-				err = m.Remove(target.CurId())
-				if err != nil {
-					return err
-				}
-			}
-		} else {
-			node, err := getRNode(patch)
-			if err != nil {
-				return err
-			}
-			err = filtersutil.ApplyToJSON(patchstrategicmerge.Filter{
-				Patch: node,
-			}, target.Kunstructured)
 		}
 	}
 	return nil
-}
-
-//TODO: Remove this once the next version of kyaml is released which
-// exposes GetRNode from the filutersutil package.
-func getRNode(k json.Marshaler) (*kyaml.RNode, error) {
-	j, err := k.MarshalJSON()
-	if err != nil {
-		return nil, err
-	}
-	return kyaml.Parse(string(j))
 }

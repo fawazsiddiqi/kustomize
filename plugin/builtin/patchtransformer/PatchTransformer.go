@@ -25,8 +25,6 @@ type plugin struct {
 	Path         string          `json:"path,omitempty" yaml:"path,omitempty"`
 	Patch        string          `json:"patch,omitempty" yaml:"patch,omitempty"`
 	Target       *types.Selector `json:"target,omitempty" yaml:"target,omitempty"`
-
-	YAMLSupport bool `json:"yamlSupport,omitempty" yaml:"yamlSupport,omitempty"`
 }
 
 //noinspection GoUnusedGlobalVariable
@@ -77,11 +75,11 @@ func (p *plugin) Config(
 }
 
 func (p *plugin) Transform(m resmap.ResMap) error {
-	if p.loadedPatch != nil {
+	if p.loadedPatch == nil {
+		return p.transformJson6902(m, p.decodedPatch)
+	} else {
 		// The patch was a strategic merge patch
 		return p.transformStrategicMerge(m, p.loadedPatch)
-	} else {
-		return p.transformJson6902(m, p.decodedPatch)
 	}
 }
 
@@ -108,27 +106,46 @@ func (p *plugin) transformStrategicMerge(m resmap.ResMap, patch *resource.Resour
 		patchCopy.SetGvk(res.GetGvk())
 		err := p.applySMPatch(res, patchCopy)
 		if err != nil {
-			return err
+			// Check for an error string from UnmarshalJSON that's indicative
+			// of an object that's missing basic KRM fields, and thus may have been
+			// entirely deleted (an acceptable outcome).  This error handling should
+			// be deleted along with use of ResMap and apimachinery functions like
+			// UnmarshalJSON.
+			if !strings.Contains(err.Error(), "Object 'Kind' is missing") {
+				// Some unknown error, let it through.
+				return err
+			}
+			if len(res.Map()) != 0 {
+				return errors.Wrapf(
+					err, "with unexpectedly non-empty object map of size %d",
+					len(res.Map()))
+			}
+			// Fall through to handle deleted object.
+		}
+		if len(res.Map()) == 0 {
+			// This means all fields have been removed from the object.
+			// This can happen if a patch required deletion of the
+			// entire resource (not just a part of it).  This means
+			// the overall resmap must shrink by one.
+			err = m.Remove(res.CurId())
+			if err != nil {
+				return err
+			}
 		}
 	}
 	return nil
 }
 
 // applySMPatch applies the provided strategic merge patch to the
-// given resource. Depending on the value of YAMLSupport, it will either
-// use the legacy implementation or the kyaml-based solution.
+// given resource.
 func (p *plugin) applySMPatch(resource, patch *resource.Resource) error {
-	if !p.YAMLSupport {
-		return resource.Patch(patch.Kunstructured)
-	} else {
-		node, err := filtersutil.GetRNode(patch)
-		if err != nil {
-			return err
-		}
-		return filtersutil.ApplyToJSON(patchstrategicmerge.Filter{
-			Patch: node,
-		}, resource.Kunstructured)
+	node, err := filtersutil.GetRNode(patch)
+	if err != nil {
+		return err
 	}
+	return filtersutil.ApplyToJSON(patchstrategicmerge.Filter{
+		Patch: node,
+	}, resource)
 }
 
 // transformJson6902 applies the provided json6902 patch
@@ -137,40 +154,19 @@ func (p *plugin) transformJson6902(m resmap.ResMap, patch jsonpatch.Patch) error
 	if p.Target == nil {
 		return fmt.Errorf("must specify a target for patch %s", p.Patch)
 	}
-
 	resources, err := m.Select(*p.Target)
 	if err != nil {
 		return err
 	}
 	for _, res := range resources {
-		err = p.applyJson6902Patch(res, patch)
+		err = filtersutil.ApplyToJSON(patchjson6902.Filter{
+			Patch: p.Patch,
+		}, res)
 		if err != nil {
 			return err
 		}
 	}
 	return nil
-}
-
-// applyJson6902Patch applies the provided patch to the given resource.
-// Depending on the value of YAMLSupport, it will either
-// use the legacy implementation or the kyaml-based solution.
-func (p *plugin) applyJson6902Patch(resource *resource.Resource, patch jsonpatch.Patch) error {
-	if !p.YAMLSupport {
-		rawObj, err := resource.MarshalJSON()
-		if err != nil {
-			return err
-		}
-		modifiedObj, err := patch.Apply(rawObj)
-		if err != nil {
-			return errors.Wrapf(
-				err, "failed to apply json patch '%s'", p.Patch)
-		}
-		return resource.UnmarshalJSON(modifiedObj)
-	} else {
-		return filtersutil.ApplyToJSON(patchjson6902.Filter{
-			Patch: p.Patch,
-		}, resource.Kunstructured)
-	}
 }
 
 // jsonPatchFromBytes loads a Json 6902 patch from

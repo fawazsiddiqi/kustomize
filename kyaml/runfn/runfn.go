@@ -52,9 +52,6 @@ type RunFns struct {
 	// Network enables network access for functions that declare it
 	Network bool
 
-	// NetworkName is the name of the docker network to use for the container
-	NetworkName string
-
 	// Output can be set to write the result to Output rather than back to the directory
 	Output io.Writer
 
@@ -74,6 +71,12 @@ type RunFns struct {
 	// ResultsDir is where to write each functions results
 	ResultsDir string
 
+	// LogSteps enables logging the function that is running.
+	LogSteps bool
+
+	// LogWriter can be set to write the logs to LogWriter rather than stderr if LogSteps is enabled.
+	LogWriter io.Writer
+
 	// resultsCount is used to generate the results filename for each container
 	resultsCount uint32
 
@@ -81,6 +84,12 @@ type RunFns struct {
 	// this is a variable so it can be mocked in tests
 	functionFilterProvider func(
 		filter runtimeutil.FunctionSpec, api *yaml.RNode) (kio.Filter, error)
+
+	// User username used to run the application in container,
+	User runtimeutil.ContainerUser
+
+	// Env contains environment variables that will be exported to container
+	Env []string
 }
 
 // Execute runs the command
@@ -110,7 +119,7 @@ func (r RunFns) getNodesAndFilters() (
 	// the same one for reading must be used for writing if deleting Resources
 	var outputPkg *kio.LocalPackageReadWriter
 	if r.Path != "" {
-		outputPkg = &kio.LocalPackageReadWriter{PackagePath: r.Path}
+		outputPkg = &kio.LocalPackageReadWriter{PackagePath: r.Path, MatchFilesGlob: kio.MatchAll}
 	}
 
 	if r.Input == nil {
@@ -169,8 +178,33 @@ func (r RunFns) runFunctions(
 		// the output is nil (reading from Input)
 		outputs = append(outputs, kio.ByteWriter{Writer: r.Output})
 	}
-	err := kio.Pipeline{
-		Inputs: []kio.Reader{input}, Filters: fltrs, Outputs: outputs}.Execute()
+
+	var err error
+	pipeline := kio.Pipeline{
+		Inputs:  []kio.Reader{input},
+		Filters: fltrs,
+		Outputs: outputs,
+	}
+	if r.LogSteps {
+		err = pipeline.ExecuteWithCallback(func(op kio.Filter) {
+			var identifier string
+
+			switch filter := op.(type) {
+			case *container.Filter:
+				identifier = filter.Image
+			case *exec.Filter:
+				identifier = filter.Path
+			case *starlark.Filter:
+				identifier = filter.String()
+			default:
+				identifier = "unknown-type function"
+			}
+
+			_, _ = fmt.Fprintf(r.LogWriter, "Running %s\n", identifier)
+		})
+	} else {
+		err = pipeline.Execute()
+	}
 	if err != nil {
 		return err
 	}
@@ -235,19 +269,42 @@ func (r RunFns) getFunctionsFromFunctions() ([]kio.Filter, error) {
 	return r.getFunctionFilters(true, r.Functions...)
 }
 
+// mergeContainerEnv will merge the envs specified by command line (imperative) and config
+// file (declarative). If they have same key, the imperative value will be respected.
+func (r RunFns) mergeContainerEnv(envs []string) []string {
+	imperative := runtimeutil.NewContainerEnvFromStringSlice(r.Env)
+	declarative := runtimeutil.NewContainerEnvFromStringSlice(envs)
+	for key, value := range imperative.EnvVars {
+		declarative.AddKeyValue(key, value)
+	}
+
+	for _, key := range imperative.VarsToExport {
+		declarative.AddKey(key)
+	}
+
+	return declarative.Raw()
+}
+
 func (r RunFns) getFunctionFilters(global bool, fns ...*yaml.RNode) (
 	[]kio.Filter, error) {
 	var fltrs []kio.Filter
 	for i := range fns {
 		api := fns[i]
 		spec := runtimeutil.GetFunctionSpec(api)
-		if spec.Container.Network.Required {
-			if !r.Network {
-				// TODO(eddiezane): Provide error info about which function needs the network
-				return fltrs, errors.Errorf("network required but not enabled with --network")
-			}
-			spec.Network = r.NetworkName
+		if spec == nil {
+			// resource doesn't have function spec
+			continue
 		}
+		if spec.Container.Network && !r.Network {
+			// TODO(eddiezane): Provide error info about which function needs the network
+			return fltrs, errors.Errorf("network required but not enabled with --network")
+		}
+		// command line username and envs has higher priority
+		if !r.User.IsEmpty() {
+			spec.Container.User = r.User
+		}
+		spec.Container.Env = r.mergeContainerEnv(spec.Container.Env)
+
 		c, err := r.functionFilterProvider(*spec, api)
 		if err != nil {
 			return nil, err
@@ -333,6 +390,11 @@ func (r *RunFns) init() {
 	if r.functionFilterProvider == nil {
 		r.functionFilterProvider = r.ffp
 	}
+
+	// if LogSteps is enabled and LogWriter is not specified, use stderr
+	if r.LogSteps && r.LogWriter == nil {
+		r.LogWriter = os.Stderr
+	}
 }
 
 // ffp provides function filters
@@ -345,11 +407,14 @@ func (r *RunFns) ffp(spec runtimeutil.FunctionSpec, api *yaml.RNode) (kio.Filter
 	}
 	if !r.DisableContainers && spec.Container.Image != "" {
 		// TODO: Add a test for this behavior
-		cf := &container.Filter{
+		c := container.NewContainer(runtimeutil.ContainerSpec{
 			Image:         spec.Container.Image,
-			Network:       spec.Network,
+			Network:       spec.Container.Network,
 			StorageMounts: r.StorageMounts,
-		}
+			User:          spec.Container.User,
+			Env:           spec.Container.Env,
+		})
+		cf := &c
 		cf.Exec.FunctionConfig = api
 		cf.Exec.GlobalScope = r.GlobalScope
 		cf.Exec.ResultsFile = resultsFile

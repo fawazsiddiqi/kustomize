@@ -225,13 +225,13 @@ spec:
     spec:
       containers:
       - env:
+        - name: foo
+          value: bar
         - name: FOO
           valueFrom:
             configMapKeyRef:
               key: somekey
-              name: test-infra-app-env-ffmd9b969m
-        - name: foo
-          value: bar
+              name: test-infra-app-env-8h5mh7f7ch
         image: nginx:1.8.0
         name: nginx
         ports:
@@ -240,7 +240,7 @@ spec:
         - configMapRef:
             name: someConfigMap
         - configMapRef:
-            name: test-infra-app-env-ffmd9b969m
+            name: test-infra-app-env-8h5mh7f7ch
         image: busybox
         name: busybox
         volumeMounts:
@@ -248,7 +248,7 @@ spec:
           name: app-env
       volumes:
       - configMap:
-          name: test-infra-app-env-ffmd9b969m
+          name: test-infra-app-env-8h5mh7f7ch
         name: app-env
 ---
 apiVersion: v1
@@ -288,12 +288,11 @@ metadata:
     app: mungebot
     org: kubernetes
     repo: test-infra
-  name: test-infra-app-env-ffmd9b969m
+  name: test-infra-app-env-8h5mh7f7ch
 ---
 apiVersion: v1
 data:
-  nonsense: "Lorem ipsum dolor sit amet, consectetur\nadipiscing elit, sed do eiusmod
-    tempor\nincididunt ut labore et dolore magna aliqua. \n"
+  nonsense: "Lorem ipsum dolor sit amet, consectetur\nadipiscing elit, sed do eiusmod tempor\nincididunt ut labore et dolore magna aliqua. \n"
 kind: ConfigMap
 metadata:
   annotations:
@@ -302,6 +301,6 @@ metadata:
     app: mungebot
     org: kubernetes
     repo: test-infra
-  name: test-infra-app-config-f462h769f9
+  name: test-infra-app-config-49d6f5h7b5
 `)
 }

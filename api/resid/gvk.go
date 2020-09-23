@@ -22,8 +22,15 @@ func FromKind(k string) Gvk {
 	}
 }
 
-// GvkFromString makes a Gvk with a string,
-// which is constructed by String() function
+// ParseGroupVersion parses a KRM metadata apiVersion field.
+func ParseGroupVersion(apiVersion string) (group, version string) {
+	if i := strings.Index(apiVersion, "/"); i > -1 {
+		return apiVersion[:i], apiVersion[i+1:]
+	}
+	return "", apiVersion
+}
+
+// GvkFromString makes a Gvk from the output of Gvk.String().
 func GvkFromString(s string) Gvk {
 	values := strings.Split(s, fieldSep)
 	g := values[0]
@@ -92,9 +99,12 @@ var orderFirst = []string{
 	"ClusterRoleBinding",
 	"ConfigMap",
 	"Secret",
+	"Endpoints",
 	"Service",
 	"LimitRange",
 	"PriorityClass",
+	"PersistentVolume",
+	"PersistentVolumeClaim",
 	"Deployment",
 	"StatefulSet",
 	"CronJob",
@@ -167,6 +177,7 @@ var notNamespaceableKinds = []string{
 	"CSIDriver",
 	"CSINode",
 	"CertificateSigningRequest",
+	"Cluster",
 	"ClusterRole",
 	"ClusterRoleBinding",
 	"ComponentStatus",

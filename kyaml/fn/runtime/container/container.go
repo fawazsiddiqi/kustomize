@@ -5,8 +5,6 @@ package container
 
 import (
 	"fmt"
-	"os"
-	"strings"
 
 	runtimeexec "sigs.k8s.io/kustomize/kyaml/fn/runtime/exec"
 	"sigs.k8s.io/kustomize/kyaml/fn/runtime/runtimeutil"
@@ -123,15 +121,7 @@ import (
 //             ├── deployment_foo.yaml
 //             └── service_bar.yaml
 type Filter struct {
-
-	// Image is the container image to use to create a container.
-	Image string `yaml:"image,omitempty"`
-
-	// Network is the container network to use.
-	Network string `yaml:"network,omitempty"`
-
-	// StorageMounts is a list of storage options that the container will have mounted.
-	StorageMounts []runtimeutil.StorageMount `yaml:"mounts,omitempty"`
+	runtimeutil.ContainerSpec `json:",inline" yaml:",inline"`
 
 	Exec runtimeexec.Filter
 }
@@ -164,22 +154,20 @@ func (c *Filter) setupExec() {
 
 // getArgs returns the command + args to run to spawn the container
 func (c *Filter) getCommand() (string, []string) {
+	network := runtimeutil.NetworkNameNone
+	if c.ContainerSpec.Network {
+		network = runtimeutil.NetworkNameHost
+	}
 	// run the container using docker.  this is simpler than using the docker
 	// libraries, and ensures things like auth work the same as if the container
 	// was run from the cli.
-
-	network := "none"
-	if c.Network != "" {
-		network = c.Network
-	}
-
 	args := []string{"run",
 		"--rm",                                              // delete the container afterward
 		"-i", "-a", "STDIN", "-a", "STDOUT", "-a", "STDERR", // attach stdin, stdout, stderr
-		"--network", network,
+		"--network", string(network),
 
 		// added security options
-		"--user", "nobody", // run as nobody
+		"--user", c.User.String(),
 		"--security-opt=no-new-privileges", // don't allow the user to escalate privileges
 		// note: don't make fs readonly because things like heredoc rely on writing tmp files
 	}
@@ -189,14 +177,18 @@ func (c *Filter) getCommand() (string, []string) {
 		args = append(args, "--mount", storageMount.String())
 	}
 
-	os.Setenv("LOG_TO_STDERR", "true")
-	os.Setenv("STRUCTURED_RESULTS", "true")
-
-	// export the local environment vars to the container
-	for _, pair := range os.Environ() {
-		args = append(args, "-e", strings.Split(pair, "=")[0])
-	}
+	args = append(args, runtimeutil.NewContainerEnvFromStringSlice(c.Env).GetDockerFlags()...)
 	a := append(args, c.Image)
-
 	return "docker", a
+}
+
+// NewContainer returns a new container filter
+func NewContainer(spec runtimeutil.ContainerSpec) Filter {
+	f := Filter{ContainerSpec: spec}
+	// default user is nobody
+	if f.ContainerSpec.User.IsEmpty() {
+		f.ContainerSpec.User = runtimeutil.UserNobody
+	}
+
+	return f
 }

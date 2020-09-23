@@ -173,6 +173,9 @@ spec:
 `)
 }
 
+// The default configuration recognizes image paths starting
+// with "spec", not spec2 or spec3, so the latter two specs won't
+// have their image entries changed.
 func TestTransfomersImageDefaultConfig(t *testing.T) {
 	th := kusttest_test.MakeHarness(t)
 	makeTransfomersImageBase(th)
@@ -299,11 +302,11 @@ spec3:
 	th.WriteF("/app/base/config/custom.yaml", `
 images:
 - kind: Custom
-  path: spec/template/spec/myContainers/image
+  path: spec/template/spec/myContainers[]/image
 - kind: Custom
-  path: spec2/template/spec/myContainers/image
+  path: spec2/template/spec/myContainers[]/image
 - kind: Custom
-  path: spec3/template/spec/myInitContainers/image
+  path: spec3/template/spec/myInitContainers[]/image
 `)
 }
 

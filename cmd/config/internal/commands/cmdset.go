@@ -5,12 +5,15 @@ package commands
 
 import (
 	"fmt"
+	"io"
 	"os"
+	"path/filepath"
 
 	"github.com/olekukonko/tablewriter"
 	"github.com/spf13/cobra"
 	"sigs.k8s.io/kustomize/cmd/config/ext"
 	"sigs.k8s.io/kustomize/cmd/config/internal/generateddocs/commands"
+	"sigs.k8s.io/kustomize/kyaml/errors"
 	"sigs.k8s.io/kustomize/kyaml/kio"
 	"sigs.k8s.io/kustomize/kyaml/setters"
 	"sigs.k8s.io/kustomize/kyaml/setters2/settersutil"
@@ -20,8 +23,8 @@ import (
 func NewSetRunner(parent string) *SetRunner {
 	r := &SetRunner{}
 	c := &cobra.Command{
-		Use:     "set DIR NAME [VALUE]",
-		Args:    cobra.MinimumNArgs(3),
+		Use:     "set DIR NAME --values [VALUE]",
+		Args:    cobra.MinimumNArgs(2),
 		Short:   commands.SetShort,
 		Long:    commands.SetLong,
 		Example: commands.SetExamples,
@@ -30,12 +33,16 @@ func NewSetRunner(parent string) *SetRunner {
 	}
 	fixDocs(parent, c)
 	r.Command = c
+	c.Flags().StringArrayVar(&r.Values, "values", []string{},
+		"optional flag, the values of the setter to be set to")
 	c.Flags().StringVar(&r.Perform.SetBy, "set-by", "",
 		"annotate the field with who set it")
 	c.Flags().StringVar(&r.Perform.Description, "description", "",
 		"annotate the field with a description of its value")
 	c.Flags().StringVar(&setterVersion, "version", "",
 		"use this version of the setter format")
+	c.Flags().BoolVarP(&r.Set.RecurseSubPackages, "recurse-subpackages", "R", false,
+		"sets recursively in all the nested subpackages")
 	c.Flags().MarkHidden("version")
 
 	return r
@@ -53,6 +60,7 @@ type SetRunner struct {
 	Perform     setters.PerformSetters
 	Set         settersutil.FieldSetter
 	OpenAPIFile string
+	Values      []string
 }
 
 func initSetterVersion(c *cobra.Command, args []string) error {
@@ -75,51 +83,99 @@ func initSetterVersion(c *cobra.Command, args []string) error {
 }
 
 func (r *SetRunner) preRunE(c *cobra.Command, args []string) error {
+	valueFlagSet := c.Flag("values").Changed
+
+	if valueFlagSet && len(args) > 2 {
+		return errors.Errorf("value should set either from flag or arg")
+	}
+
 	if len(args) > 1 {
 		r.Perform.Name = args[1]
 		r.Lookup.Name = args[1]
 	}
-	if len(args) > 2 {
+
+	if valueFlagSet {
+		r.Perform.Value = r.Values[0]
+	} else if len(args) > 2 {
 		r.Perform.Value = args[2]
 	}
 
 	if setterVersion == "" {
-		if len(args) < 3 {
+		if len(args) < 2 || len(args) < 3 && !valueFlagSet {
 			setterVersion = "v1"
 		} else if err := initSetterVersion(c, args); err != nil {
 			return err
 		}
 	}
 	if setterVersion == "v2" {
-		var err error
 		r.Set.Name = args[1]
-		r.Set.Value = args[2]
+		if valueFlagSet {
+			r.Set.Value = r.Values[0]
+		} else {
+			r.Set.Value = args[2]
+		}
 
 		// set remaining values as list values
-		if len(args) > 3 {
+		if valueFlagSet && len(r.Values) > 1 {
+			r.Set.ListValues = r.Values[1:]
+		} else if !valueFlagSet && len(args) > 3 {
 			r.Set.ListValues = args[3:]
 		}
+
 		r.Set.Description = r.Perform.Description
 		r.Set.SetBy = r.Perform.SetBy
-		r.OpenAPIFile, err = ext.GetOpenAPIFile(args)
-		if err != nil {
-			return err
-		}
+		r.OpenAPIFile = filepath.Join(args[0], ext.KRMFileName())
 	}
-
 	return nil
 }
 
 func (r *SetRunner) runE(c *cobra.Command, args []string) error {
 	if setterVersion == "v2" {
-		count, err := r.Set.Set(r.OpenAPIFile, args[0])
-		fmt.Fprintf(c.OutOrStdout(), "set %d fields\n", count)
-		return handleError(c, err)
+		e := executeCmdOnPkgs{
+			needOpenAPI:        true,
+			writer:             c.OutOrStdout(),
+			rootPkgPath:        args[0],
+			recurseSubPackages: r.Set.RecurseSubPackages,
+			cmdRunner:          r,
+		}
+		err := e.execute()
+		if err != nil {
+			return handleError(c, err)
+		}
+		return nil
 	}
-	if len(args) == 3 {
+	if len(args) > 2 || c.Flag("values").Changed {
 		return handleError(c, r.perform(c, args))
 	}
 	return handleError(c, lookup(r.Lookup, c, args))
+}
+
+func (r *SetRunner) executeCmd(w io.Writer, pkgPath string) error {
+	r.Set = settersutil.FieldSetter{
+		Name:               r.Set.Name,
+		Value:              r.Set.Value,
+		ListValues:         r.Set.ListValues,
+		Description:        r.Set.Description,
+		SetBy:              r.Set.SetBy,
+		Count:              0,
+		OpenAPIPath:        filepath.Join(pkgPath, ext.KRMFileName()),
+		OpenAPIFileName:    ext.KRMFileName(),
+		ResourcesPath:      pkgPath,
+		RecurseSubPackages: r.Set.RecurseSubPackages,
+	}
+	count, err := r.Set.Set()
+	if err != nil {
+		// return err if RecurseSubPackages is false
+		if !r.Set.RecurseSubPackages {
+			return err
+		} else {
+			// print error message and continue if RecurseSubPackages is true
+			fmt.Fprintf(w, "%s\n", err.Error())
+		}
+	} else {
+		fmt.Fprintf(w, "set %d field(s)\n", count)
+	}
+	return nil
 }
 
 func lookup(l setters.LookupSetters, c *cobra.Command, args []string) error {

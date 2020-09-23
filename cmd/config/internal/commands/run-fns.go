@@ -9,11 +9,13 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
-	"sigs.k8s.io/kustomize/cmd/config/internal/generateddocs/commands"
+
 	"sigs.k8s.io/kustomize/kyaml/errors"
 	"sigs.k8s.io/kustomize/kyaml/fn/runtime/runtimeutil"
 	"sigs.k8s.io/kustomize/kyaml/runfn"
 	"sigs.k8s.io/kustomize/kyaml/yaml"
+
+	"sigs.k8s.io/kustomize/cmd/config/internal/generateddocs/commands"
 )
 
 // GetCatRunner returns a RunFnRunner.
@@ -60,15 +62,18 @@ func GetRunFnRunner(name string) *RunFnRunner {
 
 	r.Command.Flags().BoolVar(
 		&r.Network, "network", false, "enable network access for functions that declare it")
-	r.Command.Flags().StringVar(
-		&r.NetworkName, "network-name", "bridge", "the docker network to run the container in")
 	r.Command.Flags().StringArrayVar(
 		&r.Mounts, "mount", []string{},
 		"a list of storage options read from the filesystem")
+	r.Command.Flags().BoolVar(
+		&r.LogSteps, "log-steps", false, "log steps to stderr")
+	r.Command.Flags().StringArrayVarP(
+		&r.Env, "env", "e", []string{},
+		"a list of environment variables to be used by functions")
 	return r
 }
 
-func RunFnCommand(name string) *cobra.Command {
+func RunCommand(name string) *cobra.Command {
 	return GetRunFnRunner(name).Command
 }
 
@@ -89,8 +94,9 @@ type RunFnRunner struct {
 	RunFns             runfn.RunFns
 	ResultsDir         string
 	Network            bool
-	NetworkName        string
 	Mounts             []string
+	LogSteps           bool
+	Env                []string
 }
 
 func (r *RunFnRunner) runE(c *cobra.Command, args []string) error {
@@ -99,7 +105,7 @@ func (r *RunFnRunner) runE(c *cobra.Command, args []string) error {
 
 // getContainerFunctions parses the commandline flags and arguments into explicit
 // Functions to run.
-func (r *RunFnRunner) getContainerFunctions(c *cobra.Command, args, dataItems []string) (
+func (r *RunFnRunner) getContainerFunctions(c *cobra.Command, dataItems []string) (
 	[]*yaml.RNode, error) {
 
 	if r.Image == "" && r.StarPath == "" && r.ExecPath == "" && r.StarURL == "" {
@@ -124,8 +130,8 @@ func (r *RunFnRunner) getContainerFunctions(c *cobra.Command, args, dataItems []
 		}
 		if r.Network {
 			err = fn.PipeE(
-				yaml.LookupCreate(yaml.MappingNode, "container", "network"),
-				yaml.SetField("required", yaml.NewScalarRNode("true")))
+				yaml.Lookup("container"),
+				yaml.SetField("network", yaml.NewScalarRNode("true")))
 			if err != nil {
 				return nil, err
 			}
@@ -193,7 +199,7 @@ data: {}
 	}
 	err = rc.PipeE(
 		yaml.LookupCreate(yaml.MappingNode, "metadata", "annotations"),
-		yaml.SetField("config.kubernetes.io/function", yaml.NewScalarRNode(value)))
+		yaml.SetField(runtimeutil.FunctionAnnotationKey, yaml.NewScalarRNode(value)))
 	if err != nil {
 		return nil, err
 	}
@@ -267,7 +273,7 @@ func (r *RunFnRunner) preRunE(c *cobra.Command, args []string) error {
 		return errors.Errorf("0 or 1 arguments supported, function arguments go after '--'")
 	}
 
-	fns, err := r.getContainerFunctions(c, args, dataItems)
+	fns, err := r.getContainerFunctions(c, dataItems)
 	if err != nil {
 		return err
 	}
@@ -300,11 +306,12 @@ func (r *RunFnRunner) preRunE(c *cobra.Command, args []string) error {
 		Input:          input,
 		Path:           path,
 		Network:        r.Network,
-		NetworkName:    r.NetworkName,
 		EnableStarlark: r.EnableStar,
 		EnableExec:     r.EnableExec,
 		StorageMounts:  storageMounts,
 		ResultsDir:     r.ResultsDir,
+		LogSteps:       r.LogSteps,
+		Env:            r.Env,
 	}
 
 	// don't consider args for the function

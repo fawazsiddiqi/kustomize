@@ -4,7 +4,6 @@
 package target
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -18,7 +17,6 @@ import (
 	"sigs.k8s.io/kustomize/api/internal/plugins/loader"
 	"sigs.k8s.io/kustomize/api/konfig"
 	"sigs.k8s.io/kustomize/api/resmap"
-	"sigs.k8s.io/kustomize/api/transform"
 	"sigs.k8s.io/kustomize/api/types"
 	"sigs.k8s.io/yaml"
 )
@@ -29,7 +27,6 @@ type KustTarget struct {
 	ldr           ifc.Loader
 	validator     ifc.Validator
 	rFactory      *resmap.Factory
-	tFactory      resmap.PatchFactory
 	pLdr          *loader.Loader
 }
 
@@ -38,13 +35,11 @@ func NewKustTarget(
 	ldr ifc.Loader,
 	validator ifc.Validator,
 	rFactory *resmap.Factory,
-	tFactory resmap.PatchFactory,
 	pLdr *loader.Loader) *KustTarget {
 	return &KustTarget{
 		ldr:       ldr,
 		validator: validator,
 		rFactory:  rFactory,
-		tFactory:  tFactory,
 		pLdr:      pLdr,
 	}
 }
@@ -60,7 +55,7 @@ func (kt *KustTarget) Load() error {
 		return err
 	}
 	var k types.Kustomization
-	err = unmarshal(content, &k)
+	err = k.Unmarshal(content)
 	if err != nil {
 		return err
 	}
@@ -104,18 +99,8 @@ func loadKustFile(ldr ifc.Loader) ([]byte, error) {
 	}
 }
 
-func unmarshal(y []byte, o interface{}) error {
-	j, err := yaml.YAMLToJSON(y)
-	if err != nil {
-		return err
-	}
-	dec := json.NewDecoder(bytes.NewReader(j))
-	dec.DisallowUnknownFields()
-	return dec.Decode(o)
-}
-
 // MakeCustomizedResMap creates a fully customized ResMap
-// per the instructions contained in its kustomiztion instance.
+// per the instructions contained in its kustomization instance.
 func (kt *KustTarget) MakeCustomizedResMap() (resmap.ResMap, error) {
 	return kt.makeCustomizedResMap()
 }
@@ -166,10 +151,20 @@ func (kt *KustTarget) addHashesToNames(
 // not yet fixed.
 func (kt *KustTarget) AccumulateTarget() (
 	ra *accumulator.ResAccumulator, err error) {
-	ra = accumulator.MakeEmptyAccumulator()
-	err = kt.accumulateResources(ra, kt.kustomization.Resources)
+	return kt.accumulateTarget(accumulator.MakeEmptyAccumulator())
+}
+
+// ra should be empty when this KustTarget is a Kustomization, or the ra of the parent if this KustTarget is a Component
+// (or empty if the Component does not have a parent).
+func (kt *KustTarget) accumulateTarget(ra *accumulator.ResAccumulator) (
+	resRa *accumulator.ResAccumulator, err error) {
+	ra, err = kt.accumulateResources(ra, kt.kustomization.Resources)
 	if err != nil {
 		return nil, errors.Wrap(err, "accumulating resources")
+	}
+	ra, err = kt.accumulateComponents(ra, kt.kustomization.Components)
+	if err != nil {
+		return nil, errors.Wrap(err, "accumulating components")
 	}
 	tConfig, err := builtinconfig.MakeTransformerConfig(
 		kt.ldr, kt.kustomization.Configurations)
@@ -196,6 +191,10 @@ func (kt *KustTarget) AccumulateTarget() (
 		return nil, err
 	}
 	err = kt.runTransformers(ra)
+	if err != nil {
+		return nil, err
+	}
+	err = kt.runValidators(ra)
 	if err != nil {
 		return nil, err
 	}
@@ -235,7 +234,7 @@ func (kt *KustTarget) runGenerators(
 
 func (kt *KustTarget) configureExternalGenerators() ([]resmap.Generator, error) {
 	ra := accumulator.MakeEmptyAccumulator()
-	err := kt.accumulateResources(ra, kt.kustomization.Generators)
+	ra, err := kt.accumulateResources(ra, kt.kustomization.Generators)
 	if err != nil {
 		return nil, err
 	}
@@ -250,65 +249,138 @@ func (kt *KustTarget) runTransformers(ra *accumulator.ResAccumulator) error {
 		return err
 	}
 	r = append(r, lts...)
-	lts, err = kt.configureExternalTransformers()
+	lts, err = kt.configureExternalTransformers(kt.kustomization.Transformers)
 	if err != nil {
 		return err
 	}
 	r = append(r, lts...)
-	t := transform.NewMultiTransformer(r)
-	return ra.Transform(t)
+	return ra.Transform(newMultiTransformer(r))
 }
 
-func (kt *KustTarget) configureExternalTransformers() ([]resmap.Transformer, error) {
+func (kt *KustTarget) configureExternalTransformers(transformers []string) ([]resmap.Transformer, error) {
 	ra := accumulator.MakeEmptyAccumulator()
-	err := kt.accumulateResources(ra, kt.kustomization.Transformers)
+	ra, err := kt.accumulateResources(ra, transformers)
+
 	if err != nil {
 		return nil, err
 	}
 	return kt.pLdr.LoadTransformers(kt.ldr, kt.validator, ra.ResMap())
 }
 
-// accumulateResources fills the given resourceAccumulator
-// with resources read from the given list of paths.
-func (kt *KustTarget) accumulateResources(
-	ra *accumulator.ResAccumulator, paths []string) error {
-	for _, path := range paths {
-		// try loading resource as file then as base (directory or git repository)
-		if errF := kt.accumulateFile(ra, path); errF != nil {
-			ldr, errL := kt.ldr.New(path)
-			if errL != nil {
-				return fmt.Errorf("accumulateFile %q, loader.New %q", errF, errL)
-			}
-			errD := kt.accumulateDirectory(ra, ldr)
-			if errD != nil {
-				return fmt.Errorf("accumulateFile %q, accumulateDirector: %q", errF, errD)
-			}
+func (kt *KustTarget) runValidators(ra *accumulator.ResAccumulator) error {
+	validators, err := kt.configureExternalTransformers(kt.kustomization.Validators)
+	if err != nil {
+		return err
+	}
+	for _, v := range validators {
+		// Validators shouldn't modify the resource map
+		orignal := ra.ResMap().DeepCopy()
+		err = v.Transform(ra.ResMap())
+		if err != nil {
+			return err
+		}
+		new := ra.ResMap().DeepCopy()
+		kt.removeValidatedByLabel(new)
+		if err = orignal.ErrorIfNotEqualSets(new); err != nil {
+			return fmt.Errorf("validator shouldn't modify the resource map: %v", err)
 		}
 	}
 	return nil
 }
 
+func (kt *KustTarget) removeValidatedByLabel(rm resmap.ResMap) {
+	resources := rm.Resources()
+	for _, r := range resources {
+		labels := r.GetLabels()
+		if _, found := labels[konfig.ValidatedByLabelKey]; !found {
+			continue
+		}
+		delete(labels, konfig.ValidatedByLabelKey)
+		if len(labels) == 0 {
+			r.SetLabels(nil)
+		} else {
+			r.SetLabels(labels)
+		}
+	}
+}
+
+// accumulateResources fills the given resourceAccumulator
+// with resources read from the given list of paths.
+func (kt *KustTarget) accumulateResources(
+	ra *accumulator.ResAccumulator, paths []string) (*accumulator.ResAccumulator, error) {
+	for _, path := range paths {
+		// try loading resource as file then as base (directory or git repository)
+		if errF := kt.accumulateFile(ra, path); errF != nil {
+			ldr, errL := kt.ldr.New(path)
+			if errL != nil {
+				return nil, fmt.Errorf("accumulateFile %q, loader.New %q", errF, errL)
+			}
+			var errD error
+			ra, errD = kt.accumulateDirectory(ra, ldr, false)
+			if errD != nil {
+				return nil, fmt.Errorf("accumulateFile %q, accumulateDirector: %q", errF, errD)
+			}
+		}
+	}
+	return ra, nil
+}
+
+// accumulateResources fills the given resourceAccumulator
+// with resources read from the given list of paths.
+func (kt *KustTarget) accumulateComponents(
+	ra *accumulator.ResAccumulator, paths []string) (*accumulator.ResAccumulator, error) {
+	for _, path := range paths {
+		// Components always refer to directories
+		ldr, errL := kt.ldr.New(path)
+		if errL != nil {
+			return nil, fmt.Errorf("loader.New %q", errL)
+		}
+		var errD error
+		ra, errD = kt.accumulateDirectory(ra, ldr, true)
+		if errD != nil {
+			return nil, fmt.Errorf("accumulateDirectory: %q", errD)
+		}
+	}
+	return ra, nil
+}
+
 func (kt *KustTarget) accumulateDirectory(
-	ra *accumulator.ResAccumulator, ldr ifc.Loader) error {
+	ra *accumulator.ResAccumulator, ldr ifc.Loader, isComponent bool) (*accumulator.ResAccumulator, error) {
 	defer ldr.Cleanup()
-	subKt := NewKustTarget(
-		ldr, kt.validator, kt.rFactory, kt.tFactory, kt.pLdr)
+	subKt := NewKustTarget(ldr, kt.validator, kt.rFactory, kt.pLdr)
 	err := subKt.Load()
 	if err != nil {
-		return errors.Wrapf(
+		return nil, errors.Wrapf(
 			err, "couldn't make target for path '%s'", ldr.Root())
 	}
-	subRa, err := subKt.AccumulateTarget()
+	if isComponent && subKt.kustomization.Kind != types.ComponentKind {
+		return nil, fmt.Errorf(
+			"expected kind '%s' for path '%s' but got '%s'", types.ComponentKind, ldr.Root(), subKt.kustomization.Kind)
+	} else if !isComponent && subKt.kustomization.Kind == types.ComponentKind {
+		return nil, fmt.Errorf(
+			"expected kind != '%s' for path '%s'", types.ComponentKind, ldr.Root())
+	}
+
+	var subRa *accumulator.ResAccumulator
+	if isComponent {
+		// Components don't create a new accumulator: the kustomization directives are added to the current accumulator
+		subRa, err = subKt.accumulateTarget(ra)
+		ra = accumulator.MakeEmptyAccumulator()
+	} else {
+		// Child Kustomizations create a new accumulator which resolves their kustomization directives, which will later
+		// be merged into the current accumulator.
+		subRa, err = subKt.AccumulateTarget()
+	}
 	if err != nil {
-		return errors.Wrapf(
+		return nil, errors.Wrapf(
 			err, "recursed accumulation of path '%s'", ldr.Root())
 	}
 	err = ra.MergeAccumulator(subRa)
 	if err != nil {
-		return errors.Wrapf(
+		return nil, errors.Wrapf(
 			err, "recursed merging from path '%s'", ldr.Root())
 	}
-	return nil
+	return ra, nil
 }
 
 func (kt *KustTarget) accumulateFile(

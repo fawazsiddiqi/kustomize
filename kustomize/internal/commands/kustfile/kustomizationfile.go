@@ -59,6 +59,7 @@ func determineFieldOrder() []string {
 		"Generators",
 		"Transformers",
 		"Inventory",
+		"Components",
 	}
 
 	// Add deprecated fields here.
@@ -148,9 +149,12 @@ func (mf *kustomizationFile) Read() (*types.Kustomization, error) {
 	if err != nil {
 		return nil, err
 	}
-	data = types.FixKustomizationPreUnmarshalling(data)
+	data, err = types.FixKustomizationPreUnmarshalling(data)
+	if err != nil {
+		return nil, err
+	}
 	var k types.Kustomization
-	err = yaml.Unmarshal(data, &k)
+	err = k.Unmarshal(data)
 	if err != nil {
 		return nil, err
 	}

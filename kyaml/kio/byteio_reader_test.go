@@ -298,6 +298,57 @@ metadata:
 				OmitReaderAnnotations: true,
 				SetAnnotations:        map[string]string{"foo": "bar"}},
 		},
+
+		//
+		//
+		//
+		{
+			name:  "windows_line_ending",
+			input: "\r\n---\r\na: b # first resource\r\nc: d\r\n---\r\n# second resource\r\ne: f\r\ng:\r\n- h\r\n---\r\n\r\n---\r\n i: j",
+			expectedItems: []string{
+				`a: b # first resource
+c: d
+metadata:
+  annotations:
+    foo: 'bar'
+`,
+				`# second resource
+e: f
+g:
+- h
+metadata:
+  annotations:
+    foo: 'bar'
+`,
+				`i: j
+metadata:
+  annotations:
+    foo: 'bar'
+`,
+			},
+			instance: ByteReader{
+				OmitReaderAnnotations: true,
+				SetAnnotations:        map[string]string{"foo": "bar"}},
+		},
+
+		//
+		//
+		//
+		{
+			name: "json",
+			input: `
+{
+  "a": "b",
+  "c": [1, 2]
+}
+`,
+			expectedItems: []string{
+				`
+{"a": "b", "c": [1, 2], metadata: {annotations: {config.kubernetes.io/index: '0'}}}
+`,
+			},
+			instance: ByteReader{},
+		},
 	}
 
 	for i := range testCases {

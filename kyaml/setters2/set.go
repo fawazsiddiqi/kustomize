@@ -4,14 +4,16 @@
 package setters2
 
 import (
-	"encoding/json"
 	"fmt"
 	"strings"
+	"text/template"
 
 	"github.com/go-openapi/spec"
 	"github.com/go-openapi/strfmt"
 	"github.com/go-openapi/validate"
+	goyaml "gopkg.in/yaml.v3"
 	"sigs.k8s.io/kustomize/kyaml/errors"
+	"sigs.k8s.io/kustomize/kyaml/fieldmeta"
 	"sigs.k8s.io/kustomize/kyaml/kio"
 	"sigs.k8s.io/kustomize/kyaml/kio/kioutil"
 	"sigs.k8s.io/kustomize/kyaml/openapi"
@@ -41,6 +43,10 @@ func (s *Set) Filter(object *yaml.RNode) (*yaml.RNode, error) {
 // value set
 func (s *Set) isMatch(name string) bool {
 	return s.SetAll || s.Name == name
+}
+
+func (s *Set) visitMapping(_ *yaml.RNode, p string, _ *openapi.ResourceSchema) error {
+	return nil
 }
 
 // visitSequence will perform setters for sequences
@@ -75,9 +81,9 @@ func (s *Set) visitSequence(object *yaml.RNode, p string, schema *openapi.Resour
 }
 
 // visitScalar
-func (s *Set) visitScalar(object *yaml.RNode, p string, schema *openapi.ResourceSchema) error {
+func (s *Set) visitScalar(object *yaml.RNode, p string, oa, setterSchema *openapi.ResourceSchema) error {
 	// get the openAPI for this field describing how to apply the setter
-	ext, err := getExtFromComment(schema)
+	ext, err := getExtFromComment(setterSchema)
 	if err != nil {
 		return err
 	}
@@ -85,8 +91,13 @@ func (s *Set) visitScalar(object *yaml.RNode, p string, schema *openapi.Resource
 		return nil
 	}
 
+	var k8sSchema *spec.Schema
+	if oa != nil {
+		k8sSchema = oa.Schema
+	}
+
 	// perform a direct set of the field if it matches
-	ok, err := s.set(object, ext, schema.Schema)
+	ok, err := s.set(object, ext, k8sSchema, setterSchema.Schema)
 	if err != nil {
 		return err
 	}
@@ -96,7 +107,7 @@ func (s *Set) visitScalar(object *yaml.RNode, p string, schema *openapi.Resource
 	}
 
 	// perform a substitution of the field if it matches
-	sub, err := s.substitute(object, ext, schema.Schema)
+	sub, err := s.substitute(object, ext)
 	if err != nil {
 		return err
 	}
@@ -108,71 +119,107 @@ func (s *Set) visitScalar(object *yaml.RNode, p string, schema *openapi.Resource
 
 // substitute updates the value of field from ext if ext contains a substitution that
 // depends on a setter whose name matches s.Name.
-func (s *Set) substitute(field *yaml.RNode, ext *cliExtension, _ *spec.Schema) (bool, error) {
-	nameMatch := false
-
+func (s *Set) substitute(field *yaml.RNode, ext *CliExtension) (bool, error) {
 	// check partial setters to see if they contain the setter as part of a
 	// substitution
 	if ext.Substitution == nil {
 		return false, nil
 	}
 
-	p := ext.Substitution.Pattern
+	// track the visited nodes to detect cycles in nested substitutions
+	visited := sets.String{}
 
-	// substitute each setter into the pattern to get the new value
-	for _, v := range ext.Substitution.Values {
-		if v.Ref == "" {
-			return false, errors.Errorf(
-				"missing reference on substitution " + ext.Substitution.Name)
-		}
-		ref, err := spec.NewRef(v.Ref)
-		if err != nil {
-			return false, errors.Wrap(err)
-		}
-		setter, err := openapi.Resolve(&ref) // resolve the setter to its openAPI def
-		if err != nil {
-			return false, errors.Wrap(err)
-		}
-		subSetter, err := getExtFromSchema(setter) // parse the extension out of the openAPI
-		if err != nil {
-			return false, errors.Wrap(err)
-		}
+	// nameMatch indicates if the input substitution depends on the specified setter,
+	// the substitution in ext is parsed recursively and if the setter in Set is hit while
+	// parsing, it indicates the match
+	nameMatch := false
 
-		if err := validateAgainstSchema(subSetter, setter); err != nil {
-			return false, err
-		}
-
-		if val, found := subSetter.Setter.EnumValues[subSetter.Setter.Value]; found {
-			// the setter has an enum-map.  we should replace the marker with the
-			// enum value looked up from the map rather than the enum key
-			p = strings.ReplaceAll(p, v.Marker, val)
-		} else {
-			// substitute the setters current value into the substitution pattern
-			p = strings.ReplaceAll(p, v.Marker, subSetter.Setter.Value)
-		}
-
-		if s.isMatch(subSetter.Setter.Name) {
-			// the substitution depends on the specified setter
-			nameMatch = true
-		}
+	res, err := s.substituteUtil(ext, visited, &nameMatch)
+	if err != nil {
+		return false, err
 	}
+
 	if !nameMatch {
 		// doesn't depend on the setter, don't modify its value
 		return false, nil
 	}
 
-	// TODO(pwittrock): validate the field value
-
-	field.YNode().Value = p
+	field.YNode().Value = res
 
 	// substitutions are always strings
-	field.YNode().Tag = yaml.StringTag
+	field.YNode().Tag = yaml.NodeTagString
 
 	return true, nil
 }
 
+// substituteUtil recursively parses nested substitutions in ext and sets the setter value
+// returns error if cyclic substitution is detected or any other unexpected errors
+func (s *Set) substituteUtil(ext *CliExtension, visited sets.String, nameMatch *bool) (string, error) {
+	// check if the substitution has already been visited and throw error as cycles
+	// are not allowed in nested substitutions
+	if visited.Has(ext.Substitution.Name) {
+		return "", errors.Errorf(
+			"cyclic substitution detected with name " + ext.Substitution.Name)
+	}
+
+	visited.Insert(ext.Substitution.Name)
+	pattern := ext.Substitution.Pattern
+
+	// substitute each setter into the pattern to get the new value
+	// if substitution references to another substitution, recursively
+	// process the nested substitutions to replace the pattern with setter values
+	for _, v := range ext.Substitution.Values {
+		if v.Ref == "" {
+			return "", errors.Errorf(
+				"missing reference on substitution " + ext.Substitution.Name)
+		}
+		ref, err := spec.NewRef(v.Ref)
+		if err != nil {
+			return "", errors.Wrap(err)
+		}
+		def, err := openapi.Resolve(&ref) // resolve the def to its openAPI def
+		if err != nil {
+			return "", errors.Wrap(err)
+		}
+		defExt, err := GetExtFromSchema(def) // parse the extension out of the openAPI
+		if err != nil {
+			return "", errors.Wrap(err)
+		}
+
+		if defExt.Substitution != nil {
+			// parse recursively if it reference is substitution
+			substVal, err := s.substituteUtil(defExt, visited, nameMatch)
+			if err != nil {
+				return "", err
+			}
+			pattern = strings.ReplaceAll(pattern, v.Marker, substVal)
+			continue
+		}
+
+		// if code reaches this point, this is a setter, so validate the setter schema
+		if err := validateAgainstSchema(defExt, def); err != nil {
+			return "", err
+		}
+
+		if s.isMatch(defExt.Setter.Name) {
+			// the substitution depends on the specified setter
+			*nameMatch = true
+		}
+
+		if val, found := defExt.Setter.EnumValues[defExt.Setter.Value]; found {
+			// the setter has an enum-map.  we should replace the marker with the
+			// enum value looked up from the map rather than the enum key
+			pattern = strings.ReplaceAll(pattern, v.Marker, val)
+		} else {
+			pattern = strings.ReplaceAll(pattern, v.Marker, defExt.Setter.Value)
+		}
+	}
+
+	return pattern, nil
+}
+
 // set applies the value from ext to field if its name matches s.Name
-func (s *Set) set(field *yaml.RNode, ext *cliExtension, sch *spec.Schema) (bool, error) {
+func (s *Set) set(field *yaml.RNode, ext *CliExtension, k8sSch, sch *spec.Schema) (bool, error) {
 	// check full setter
 	if ext.Setter == nil || !s.isMatch(ext.Setter.Name) {
 		return false, nil
@@ -192,36 +239,70 @@ func (s *Set) set(field *yaml.RNode, ext *cliExtension, sch *spec.Schema) (bool,
 	// this has a full setter, set its value
 	field.YNode().Value = ext.Setter.Value
 
-	// format the node so it is quoted if it is a string
-	yaml.FormatNonStringStyle(field.YNode(), *sch)
+	// format the node so it is quoted if it is a string. If there is
+	// type information on the setter schema, we use it. Otherwise we
+	// fall back to the field schema if it exists.
+	if len(sch.Type) > 0 {
+		yaml.FormatNonStringStyle(field.YNode(), *sch)
+	} else if k8sSch != nil {
+		yaml.FormatNonStringStyle(field.YNode(), *k8sSch)
+	}
 	return true, nil
 }
 
 // validateAgainstSchema validates the input setter value against user provided
 // openAI schema
-func validateAgainstSchema(ext *cliExtension, sch *spec.Schema) error {
+func validateAgainstSchema(ext *CliExtension, sch *spec.Schema) error {
+	fixSchemaTypes(sch)
 	sc := spec.Schema{}
 	sc.Properties = map[string]spec.Schema{}
 	sc.Properties[ext.Setter.Name] = *sch
 
-	input := map[string]interface{}{}
-	var inputJSON string
-
+	var inputYAML string
 	if len(ext.Setter.ListValues) > 0 {
-		format := `{"%s" : [%s]}`
-		inputJSON = fmt.Sprintf(format, ext.Setter.Name, JoinCompositeStrings(ext.Setter.ListValues))
-	} else {
-		format := `{"%s" : "%s"}`
-		if yaml.IsValueNonString(ext.Setter.Value) {
-			format = `{"%s" : %s}`
+		// tmplText contains the template we will use to produce a yaml
+		// document that we can use for validation.
+		var tmplText string
+		if sch.Items != nil && sch.Items.Schema != nil &&
+			sch.Items.Schema.Type.Contains("string") {
+			// If string is one of the legal types for the value, we
+			// output it with quotes in the yaml document to make sure it
+			// is later parsed as a string.
+			tmplText = `{{.key}}:{{block "list" .values}}{{"\n"}}{{range .}}{{printf "- %q\n" .}}{{end}}{{end}}`
+		} else {
+			// If string is not specifically set as the type, we just
+			// let the yaml unmarshaller detect the correct type. Thus, we
+			// do not add quotes around the value.
+			tmplText = `{{.key}}:{{block "list" .values}}{{"\n"}}{{range .}}{{println "-" .}}{{end}}{{end}}`
 		}
-		inputJSON = fmt.Sprintf(format, ext.Setter.Name, ext.Setter.Value)
+
+		tmpl, err := template.New("validator").Parse(tmplText)
+		if err != nil {
+			return err
+		}
+		var builder strings.Builder
+		err = tmpl.Execute(&builder, map[string]interface{}{
+			"key":    ext.Setter.Name,
+			"values": ext.Setter.ListValues,
+		})
+		if err != nil {
+			return err
+		}
+		inputYAML = builder.String()
+	} else {
+		var format string
+		// Only add quotes around the value is string is one of the
+		// types in the schema.
+		if sch.Type.Contains("string") {
+			format = "%s: \"%s\""
+		} else {
+			format = "%s: %s"
+		}
+		inputYAML = fmt.Sprintf(format, ext.Setter.Name, ext.Setter.Value)
 	}
 
-	// leverage json.Unmarshal to parse the value type
-	// Ex: `{"setter" : "true"}` parses the value as string whereas
-	// `{"setter" : true}` parses as boolean
-	err := json.Unmarshal([]byte(inputJSON), &input)
+	input := map[string]interface{}{}
+	err := goyaml.Unmarshal([]byte(inputYAML), &input)
 	if err != nil {
 		return err
 	}
@@ -232,19 +313,31 @@ func validateAgainstSchema(ext *cliExtension, sch *spec.Schema) error {
 	return nil
 }
 
-// JoinCompositeStrings takes in strings whose values can be of different types and returns
-// joined string with quotes for only string type values
-// ex: ["10", "true",  "hi", "1.1"] returns 10,true,"hi",1.1
-func JoinCompositeStrings(listValues []string) string {
-	res := ""
-	for _, val := range listValues {
-		if yaml.IsValueNonString(val) {
-			res += fmt.Sprintf(`%s,`, val)
-		} else {
-			res += fmt.Sprintf(`"%s",`, val)
+// fixSchemaTypes traverses the schema and checks for some common
+// errors for the type field. This currently involves users using
+// 'int' instead of 'integer' and 'bool' instead of 'boolean'. Early versions
+// of setters didn't validate this, so there are users that have invalid
+// types in their packages.
+func fixSchemaTypes(sc *spec.Schema) {
+	for i := range sc.Type {
+		currentType := sc.Type[i]
+		if currentType == "int" {
+			sc.Type[i] = "integer"
+		}
+		if currentType == "bool" {
+			sc.Type[i] = "boolean"
 		}
 	}
-	return strings.TrimSuffix(res, ",")
+
+	if items := sc.Items; items != nil {
+		if items.Schema != nil {
+			fixSchemaTypes(items.Schema)
+		}
+		for i := range items.Schemas {
+			schema := items.Schemas[i]
+			fixSchemaTypes(&schema)
+		}
+	}
 }
 
 // SetOpenAPI updates a setter value
@@ -268,20 +361,20 @@ func (s SetOpenAPI) UpdateFile(path string) error {
 }
 
 func (s SetOpenAPI) Filter(object *yaml.RNode) (*yaml.RNode, error) {
-	key := SetterDefinitionPrefix + s.Name
+	key := fieldmeta.SetterDefinitionPrefix + s.Name
 	oa, err := object.Pipe(yaml.Lookup("openAPI", "definitions", key))
 	if err != nil {
 		return nil, err
 	}
 	if oa == nil {
-		return nil, errors.Errorf("no setter %s found", s.Name)
+		return nil, errors.Errorf("setter %q is not found", s.Name)
 	}
 	def, err := oa.Pipe(yaml.Lookup("x-k8s-cli", "setter"))
 	if err != nil {
 		return nil, err
 	}
 	if def == nil {
-		return nil, errors.Errorf("no setter %s found", s.Name)
+		return nil, errors.Errorf("setter %q is not found", s.Name)
 	}
 
 	// record the OpenAPI type for the setter
@@ -325,7 +418,7 @@ func (s SetOpenAPI) Filter(object *yaml.RNode) (*yaml.RNode, error) {
 	// values are always represented as strings the OpenAPI
 	// since the are unmarshalled into strings.  Use double quote style to
 	// ensure this consistently.
-	v.YNode().Tag = yaml.StringTag
+	v.YNode().Tag = yaml.NodeTagString
 	v.YNode().Style = yaml.DoubleQuotedStyle
 
 	if t != "array" {
@@ -341,7 +434,7 @@ func (s SetOpenAPI) Filter(object *yaml.RNode) (*yaml.RNode, error) {
 		// create the list values
 		var elements []*yaml.Node
 		n := yaml.NewScalarRNode(s.Value).YNode()
-		n.Tag = yaml.StringTag
+		n.Tag = yaml.NodeTagString
 		n.Style = yaml.DoubleQuotedStyle
 		elements = append(elements, n)
 		for i := range s.ListValues {
@@ -362,6 +455,10 @@ func (s SetOpenAPI) Filter(object *yaml.RNode) (*yaml.RNode, error) {
 	}
 
 	if err := def.PipeE(&yaml.FieldSetter{Name: "setBy", StringValue: s.SetBy}); err != nil {
+		return nil, err
+	}
+
+	if err := def.PipeE(&yaml.FieldSetter{Name: "isSet", StringValue: "true"}); err != nil {
 		return nil, err
 	}
 

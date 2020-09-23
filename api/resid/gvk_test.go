@@ -78,6 +78,8 @@ var lessThanTests = []struct {
 		Gvk{Group: "a", Version: "b", Kind: "ValidatingWebhookConfiguration"}},
 	{Gvk{Group: "a", Version: "b", Kind: "Service"},
 		Gvk{Group: "a", Version: "b", Kind: "APIService"}},
+	{Gvk{Group: "a", Version: "b", Kind: "Endpoints"},
+		Gvk{Group: "a", Version: "b", Kind: "Service"}},
 }
 
 func TestIsLessThan1(t *testing.T) {
@@ -109,6 +111,30 @@ func TestString(t *testing.T) {
 	for _, hey := range stringTests {
 		if hey.x.String() != hey.s {
 			t.Fatalf("bad string for %v '%s'", hey.x, hey.s)
+		}
+	}
+}
+
+func TestParseGroupVersion(t *testing.T) {
+	tests := []struct {
+		input string
+		g     string
+		v     string
+	}{
+		{input: "", g: "", v: ""},
+		{input: "v1", g: "", v: "v1"},
+		{input: "apps/v1", g: "apps", v: "v1"},
+		{input: "/v1", g: "", v: "v1"},
+		{input: "apps/", g: "apps", v: ""},
+		{input: "/apps/", g: "", v: "apps/"},
+	}
+	for _, tc := range tests {
+		g, v := ParseGroupVersion(tc.input)
+		if g != tc.g {
+			t.Errorf("%s: expected group '%s', got '%s'", tc.input, tc.g, g)
+		}
+		if v != tc.v {
+			t.Errorf("%s: expected version '%s', got '%s'", tc.input, tc.v, v)
 		}
 	}
 }

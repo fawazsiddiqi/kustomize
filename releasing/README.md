@@ -6,47 +6,146 @@
 [semver]: https://semver.org
 [Go modules]: https://github.com/golang/go/wiki/Modules
 [multi-module repo]: https://github.com/go-modules-by-example/index/blob/master/009_submodules/README.md
+[semver review]: #semver-review
+[semver release]: #semver-review
+[`cloudbuild.yaml`]: cloudbuild.yaml
+[kustomize repo release page]: https://github.com/kubernetes-sigs/kustomize/releases
 
-This document describes how to perform a [semver] release
-of one of the [Go modules] in this repository.
+This document describes how to perform a [semver release]
+of one of the several [Go modules] in this repository.
 
-These modules release independently.
+### Release sequence
 
-See this [multi-module repo] tagging discussion
-for an explanation of the `foo/v2.3.0` tags applied below.
+The dependencies determine the release order:
 
-## Module summaries
+| module | depends on |
+| ---    | ---        |
+| `sigs.k8s.io/kustomize/kyaml`      | no local dependencies |
+| `sigs.k8s.io/cli-utils`            | `kyaml`               |
+| `sigs.k8s.io/kustomize/cmd/config` | `kyaml`, `cli-utils`  |
+| `sigs.k8s.io/kustomize/api`        | `kyaml`               |
+| `sigs.k8s.io/kustomize/kustomize`  | `cmd/config`, `api`   |
 
-[`sigs.k8s.io/kustomize/kustomize`]: #sigsk8siokustomizekustomize
+Thus, do `kyaml` first, then `cli-utils`, etc.
+
+#### Establish clean state
+
+```
+cd ~/gopath/src/sigs.k8s.io/kustomize
+git fetch upstream
+git co master
+git rebase upstream/master
+make prow-presubmit-check
+```
+
+#### Release `kyaml`
+
+```
+gorepomod release kyaml
+```
+Undraft the release on the [kustomize repo release page].
+
+
+#### Release `cli-utils`
+
+```
+cd ../cli-utils
+
+# Pin to the most recent kyaml.
+gorepomod pin kyaml
+
+# Merge these changes to upstream (make a PR, merge it)
+
+# Release cli-utils
+gorepomod release {top}
+```
+
+#### Release `cmd/config`
+
+```
+cd ../kustomize
+
+# Pin to the most recent kyaml.
+gorepomod pin kyaml
+
+# Pin cmd/config/go.mod to the new cli-utils, e.g.
+(cd cmd/config; go mod edit -require=sigs.k8s.io/cli-utils@v0.20.2)
+
+# Merge these changes to upstream (make a PR, etc.)
+
+# Release it.
+gorepomod release cmd/config
+```
+
+Undraft the release on the [kustomize repo release page].
+
+#### Release `api` (the kustomize API, used by the CLI)
+
+```
+gorepomod pin cmd/config
+# Merge these changes.
+
+gorepomod release api
+```
+
+Undraft the release on the [kustomize repo release page].
+
+#### Release the kustomize CLI
+
+```
+gorepomod pin api
+# Merge these changes.
+
+gorepomod release kustomize
+```
+
+Undraft the release on the [kustomize repo release page].
+
+#### Unpin everything
+
+Go back into development mode, so current code in-repo
+depends on current code in-repo.
+
+```
+gorepomod unpin api
+gorepomod unpin cmd/config
+gorepomod unpin kyaml
+# Merge these changes.
+```
+
+Visit the [release page] and edit the release notes as desired;
+this should be automated, and descriptions in PR's should
+be standardized to make automation possible.
+See kubebuilder project.
+
+
+## Public Modules
+
+[`sigs.k8s.io/cli-utils`]: #sigsk8siocli-utils
 [`sigs.k8s.io/kustomize/api`]: #sigsk8siokustomizeapi
-[`sigs.k8s.io/kustomize/pluginator`]: #sigsk8siokustomizepluginator
+[`sigs.k8s.io/kustomize/kustomize`]: #sigsk8siokustomizekustomize
+[`sigs.k8s.io/kustomize/kyaml`]: #sigsk8siokustomizekyaml
+[`sigs.k8s.io/kustomize/cmd/config`]: #sigsk8siokustomizecmdconfig
+
 [kustomize/v3.2.1]: /../../releases/tag/kustomize%2Fv3.2.1
 [pluginator/v1.0.0]: /../../releases/tag/pluginator%2Fv1.0.0
 
-| Module Description | Module Prefix | Ex. Tag  | Ex. Branch Name |
-| ---                | ------        | --- | ---         |
-| kustomize executable  | [`sigs.k8s.io/kustomize/kustomize`]  | _kustomize/v3.2.2_  | _release-kustomize-v3.2.2_ |
-| kustomize Go API      | [`sigs.k8s.io/kustomize/api`]        | _api/v0.1.0_        | _release-api-v0.1_         |
-| pluginator executable | [`sigs.k8s.io/kustomize/pluginator`] | _pluginator/v1.0.0_ | _release-pluginator-v1.0_  |
+| Module Name                          | Module Description         | Example Tag         | Example Branch Name         |
+| ------                               | ---                        | ---                 | ---                         |
+| [`sigs.k8s.io/cli-utils`]            | General cli-utils          | _cli-utils/v0.20.2_ | _release-cli-utils-v0.20.2_ |
+| [`sigs.k8s.io/kustomize/kustomize`]  | kustomize executable       | _kustomize/v3.2.2_  | _release-kustomize-v3.2.2_  |
+| [`sigs.k8s.io/kustomize/api`]        | kustomize API              | _api/v0.1.0_        | _release-api-v0.1_          |
+| [`sigs.k8s.io/kustomize/kyaml`]      | k8s-specific yaml editting | _kyaml/v0.3.3_      | _release-kyaml-v0.2_        |
+| [`sigs.k8s.io/kustomize/cmd/config`] | kyaml related commands     | _cmd/config/v0.3.3_ | _release-cmd/config-v0.3_   |
 
 ### sigs.k8s.io/kustomize/kustomize
 
 The `kustomize` program, a CLI for performing
-k8s-aware structured edits to YAML in k8s resource
-files.
-
-#### Packages
+structured edits to Kubernetes Resource Model (KRM) YAML.
 
 There's only one public package in this module.
-It's called `main`, it's therefore unimportable,
-and it holds the _kustomize_ executable.
-
-
-#### Release artifacts
-
-Executable files appear for various operating
-systems on the [release page].  The tag
-appears in the URL, e.g. [kustomize/v3.2.1].
+It's called `main`, it's therefore unimportable.
+It holds the `kustomize` executable.
 
 See the [installation instructions](../docs/INSTALL.md)
 to perform an install.
@@ -54,34 +153,37 @@ to perform an install.
 
 ### sigs.k8s.io/kustomize/api
 
-This is the kustomize Go API.
-
-#### Packages
+The [kustomize Go API](https://github.com/kubernetes-sigs/kustomize/tree/master/api).
 
 The packages in this module are used by API clients,
-like the `kustomize` program itself, and programs
-in other repositories, e.g. `kubectl`.
-They include methods to read, edit and emit
-modified YAML.
-
-Go consumers of this API will have a `go.mod` file
-requiring this module at a particular tag, e.g.
-
-```
-require sigs.k8s.io/kustomize/api v0.1.0
-```
-
-#### Release artifacts
-
-This is a Go library-only release, so the only
-artifact per se is the repo tag, in the form `api/v1.2.3`,
-that API clients can `require` from their `go.mod` file.
+like the `kustomize` program itself, and programs in
+other repositories, e.g. `kubectl`.  They include
+methods to read, edit and emit modified YAML.
 
 Release notes should appear on the [release page].
 
-There's a toy executable called `api`, which, if
-run, prints the API release provenance data, but it's of
-no practical use to an API client.
+The package has a toy executable called `api`, which,
+if run, prints the API release version, but has no
+other use.
+
+### sigs.k8s.io/kustomize/kyaml
+
+The [kyaml module](https://github.com/kubernetes-sigs/kustomize/tree/master/kyaml).
+
+Low level packages for transforming YAML associated
+with KRM objects.
+
+These are used to build _kyaml filters_, computational units
+that accept and emit KRM YAML, editing or simply validating it.
+
+The kustomize `api` and the `cmd/config` packages are built on this.
+
+### sigs.k8s.io/kustomize/cmd/config
+
+The [cmd/config module](https://github.com/kubernetes-sigs/kustomize/tree/master/cmd/config).
+
+A collection od CLI commands that correspond to
+kyaml filters.
 
 ### sigs.k8s.io/kustomize/pluginator
 
@@ -89,61 +191,59 @@ The `pluginator` program, a code generator that
 converts Go plugins to conventional statically
 linkable library code.
 
-#### Packages
+Only holds a `main`, and therefore unimportable.
+It holds the _pluginator_ executable.
 
-There's only one package in this module.
-It's called `main`, it's therefore unimportable,
-and it holds the _pluginator_ executable.
-
-At the time of writing this binary is only of
+This binary is only of
 interest to someone writing a new builtin
 transformer or generator.  See the [plugin
 documentation](../docs/plugins).
-Its dependence on the API is primarily for
-plugin-related constants, not logic, and will
-only change if there's some change in how
-plugins are constructed (presumably
-infrequently).
+Its dependence on the API is  for
+plugin-related constants, not logic.
 
-#### Release artifacts
+## Manual process
 
-Executables appear on the [release page].
-The tag appears in the URL, e.g. [pluginator/v1.0.0].
+In this repo, releasing a module is accomplished by applying
+a tag to the repo and pushing it upstream.  A minor release
+branch is also created as necessary to track patch releases.
 
-## Release procedure
+A properly formatted tag (described below) contains
+the module name and version.
 
-> TODO: script what follows, so someone can enter
-> ```
-> go run ./releasing/release.go kustomize minor
-> # or:
-> # go run ./releasing/release.go api patch
-> # go run ./releasing/release.go pluginator minor
-> ```
-> The program would look at the existing remote tags,
-> confirm sanity and increment the appropriate major/minor/patch
-> component, create the right branch and tag, etc.
-> No more bash please.
+Pushing the tag upstream will trigger [Google Cloud Build] to build a release
+and make it available on the  [release page].
 
-At any given moment, the repository's master branch is
-passing all its tests and contains code one could release.
+Cloud build reads its instructions from the
+[`cloudbuild.yaml`] file in this directory.
 
-### get up to date
+We use a Go program to make the tagging and branch
+creation process less error prone.
+
+See this [multi-module repo] tagging discussion
+for an explanation of the path-like portion of these tags.
+
+### Get up to date
+
+It's assumed that whatever is already commited to the latest
+commit is passing all tests and appropriate for release.
+
 
 ```
 git fetch upstream
 git checkout master
 git rebase upstream/master
+make prow-presubmit-check
 ```
 
-### select a module to release
+### Select a module to release
 
+E.g.
 ```
-module=pluginator  # The pluginator executable
 module=kustomize   # The kustomize executable
 module=api         # The API
 ```
 
-### review tags to help determine new tag
+### Review tags to help determine new tag
 
 Local:
 ```
@@ -155,7 +255,13 @@ Remote:
 git ls-remote --tags upstream | grep $module
 ```
 
-### determine the version
+Set the version you want:
+
+```
+major=0; minor=1; patch=0
+```
+
+#### semver review
 
 Go's [semver]-compatible version tags take the form `v{major}.{minor}.{patch}`:
 
@@ -169,11 +275,9 @@ Go's [semver]-compatible version tags take the form `v{major}.{minor}.{patch}`:
  - If there's an API change (either the Go API or the CLI behavior
    with respect to CLI arguments and flags), increment `major`.
 
-```
-major=0; minor=1; patch=0
-```
 
-### create the release branch
+
+### Create the release branch
 
 Every module release occurs on it's own git branch.
 
@@ -195,14 +299,14 @@ Create it:
 git checkout -b $branch
 ```
 
-### define the release tag
+### Define the release tag
 
 ```
 tag="${module}/v${major}.${minor}.${patch}"
 echo "tag=$tag"
 ```
 
-### pin the executable to a particular API version
+### Pin the executable to a particular API version
 
 Only do this if releasing one of the
 executables (kustomize or pluginator).
@@ -230,15 +334,17 @@ requires.
 
 ```
 
-### push the release branch
+### Push the release branch
 
 ```
 git push -f upstream $branch
 ```
 
-### if replacing a release...
+#### if replacing a release...
 
 Must delete the tag before re-pushing it.
+Dangerous - only do this if you're sure nothing
+has already pulled the release.
 
 Delete the tag locally:
 
@@ -262,7 +368,7 @@ Optionally visit the [release page] and delete
 (what has now become) the _draft_ release for that
 version.
 
-### tag the local repository
+### Tag the local repository
 
 ```
 git tag -a $tag -m "Release $tag on branch $branch"
@@ -275,7 +381,7 @@ git push upstream :latest_kustomize
 git tag -a latest_kustomize
 ```
 
-### optionally build a release locally
+### Optionally build a release locally
 
 [localbuild.sh]: localbuild.sh
 
@@ -287,7 +393,7 @@ Install [`cloud-build-local`], then run [localbuild.sh]:
 
 This should create release artifacts in a local directory.
 
-### trigger the cloud build by pushing the tag
+### Trigger the cloud build by pushing the tag
 
 Push the tag:
 
@@ -298,9 +404,8 @@ git push upstream latest_kustomize
 git remote set-url --push upstream no_push
 ```
 
-This triggers a job in [Google Cloud Build] to
-put a new release on the [release page].
+This triggers [Google Cloud Build].
 
-###  update release notes
+###  Update release notes
 
 Visit the [release page] and edit the release notes as desired.

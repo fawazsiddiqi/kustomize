@@ -16,13 +16,19 @@ type visitor interface {
 	// node is the scalar field value
 	// path is the path to the field; path elements are separated by '.'
 	// oa is the OpenAPI schema for the field
-	visitScalar(node *yaml.RNode, path string, oa *openapi.ResourceSchema) error
+	visitScalar(node *yaml.RNode, path string, oa *openapi.ResourceSchema, fieldOA *openapi.ResourceSchema) error
 
 	// visitSequence is called for each sequence field value on a resource
 	// node is the sequence field value
 	// path is the path to the field
 	// oa is the OpenAPI schema for the field
 	visitSequence(node *yaml.RNode, path string, oa *openapi.ResourceSchema) error
+
+	// visitMapping is called for each Mapping field value on a resource
+	// node is the mapping field value
+	// path is the path to the field
+	// oa is the OpenAPI schema for the field
+	visitMapping(node *yaml.RNode, path string, oa *openapi.ResourceSchema) error
 }
 
 // accept invokes the appropriate function on v for each field in object
@@ -39,11 +45,14 @@ func acceptImpl(v visitor, object *yaml.RNode, p string, oa *openapi.ResourceSch
 		// Traverse the child of the document
 		return accept(v, yaml.NewRNode(object.YNode()))
 	case yaml.MappingNode:
+		if err := v.visitMapping(object, p, oa); err != nil {
+			return err
+		}
 		return object.VisitFields(func(node *yaml.MapNode) error {
 			// get the schema for the field and propagate it
-			oa = getSchema(node.Key, oa, node.Key.YNode().Value)
+			fieldSchema := getSchema(node.Key, oa, node.Key.YNode().Value)
 			// Traverse each field value
-			return acceptImpl(v, node.Value, p+"."+node.Key.YNode().Value, oa)
+			return acceptImpl(v, node.Value, p+"."+node.Key.YNode().Value, fieldSchema)
 		})
 	case yaml.SequenceNode:
 		// get the schema for the sequence node, use the schema provided if not present
@@ -52,15 +61,15 @@ func acceptImpl(v visitor, object *yaml.RNode, p string, oa *openapi.ResourceSch
 			return err
 		}
 		// get the schema for the elements
-		oa = getSchema(object, oa, "")
+		schema := getSchema(object, oa, "")
 		return object.VisitElements(func(node *yaml.RNode) error {
 			// Traverse each list element
-			return acceptImpl(v, node, p, oa)
+			return acceptImpl(v, node, p, schema)
 		})
 	case yaml.ScalarNode:
 		// Visit the scalar field
-		oa = getSchema(object, oa, "")
-		return v.visitScalar(object, p, oa)
+		fieldSchema := getSchema(object, oa, "")
+		return v.visitScalar(object, p, oa, fieldSchema)
 	}
 	return nil
 }
@@ -101,7 +110,7 @@ func getSchema(r *yaml.RNode, s *openapi.ResourceSchema, field string) *openapi.
 		return s
 	}
 
-	if yaml.IsEmpty(r) {
+	if yaml.IsMissingOrNull(r) {
 		return nil
 	}
 

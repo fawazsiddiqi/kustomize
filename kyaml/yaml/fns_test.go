@@ -395,6 +395,19 @@ bar: buz
 	assert.Equal(t, `baz
 `, assertNoErrorString(t)(k.String()))
 
+	// Empty value
+	node, err = Parse(`
+foo
+`)
+	assert.NoError(t, err)
+	instance = FieldSetter{}
+	k, err = instance.Filter(node)
+	assert.NoError(t, err)
+	assert.Equal(t, `foo
+`, assertNoErrorString(t)(node.String()))
+	assert.Equal(t, `foo
+`, assertNoErrorString(t)(k.String()))
+
 	// Encounter error
 	node, err = Parse(`
 -a
@@ -505,6 +518,11 @@ func TestSplitIndexNameValue(t *testing.T) {
 	assert.NoError(t, err)
 	assert.Equal(t, "a", k)
 	assert.Equal(t, "b=c", v)
+
+	k, v, err = SplitIndexNameValue("=-jar")
+	assert.NoError(t, err)
+	assert.Equal(t, "", k)
+	assert.Equal(t, "-jar", v)
 }
 
 type filter struct {
@@ -685,11 +703,15 @@ metadata:
 		return
 	}
 	assert.Equal(t, ResourceMeta{
-		Kind:       "Deployment",
-		APIVersion: "v1/apps",
+		TypeMeta: TypeMeta{
+			Kind:       "Deployment",
+			APIVersion: "v1/apps",
+		},
 		ObjectMeta: ObjectMeta{
-			Name:      "foo",
-			Namespace: "bar",
+			NameMeta: NameMeta{
+				Name:      "foo",
+				Namespace: "bar",
+			},
 			Annotations: map[string]string{
 				"ka": "va",
 			},

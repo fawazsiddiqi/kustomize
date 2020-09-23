@@ -8,18 +8,17 @@ import (
 	"flag"
 	"os"
 
+	"sigs.k8s.io/kustomize/cmd/config/configcobra"
+
 	"github.com/spf13/cobra"
 	"sigs.k8s.io/kustomize/api/filesys"
 	"sigs.k8s.io/kustomize/api/k8sdeps/kunstruct"
 	"sigs.k8s.io/kustomize/api/k8sdeps/validator"
 	"sigs.k8s.io/kustomize/api/konfig"
 	shell_complete "sigs.k8s.io/kustomize/cmd/config/complete"
-	"sigs.k8s.io/kustomize/cmd/kubectl/kubectlcobra"
 	"sigs.k8s.io/kustomize/kustomize/v3/internal/commands/build"
-	"sigs.k8s.io/kustomize/kustomize/v3/internal/commands/config"
 	"sigs.k8s.io/kustomize/kustomize/v3/internal/commands/create"
 	"sigs.k8s.io/kustomize/kustomize/v3/internal/commands/edit"
-	"sigs.k8s.io/kustomize/kustomize/v3/internal/commands/status"
 	"sigs.k8s.io/kustomize/kustomize/v3/internal/commands/version"
 )
 
@@ -44,14 +43,8 @@ See https://sigs.k8s.io/kustomize
 		edit.NewCmdEdit(fSys, v, uf),
 		create.NewCmdCreate(fSys, uf),
 		version.NewCmdVersion(stdOut),
-		status.NewCmdStatus(),
 	)
-	if cc := config.NewCmdConfig(fSys); cc != nil {
-		c.AddCommand(cc)
-	}
-	if kc := kubectlcobra.GetCommand(c); kc != nil {
-		c.AddCommand(kc)
-	}
+	configcobra.AddCommands(c, "kustomize")
 
 	c.PersistentFlags().AddGoFlagSet(flag.CommandLine)
 

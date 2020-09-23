@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/google/go-cmp/cmp"
+
 	"sigs.k8s.io/kustomize/api/filesys"
 	"sigs.k8s.io/kustomize/api/konfig"
 	"sigs.k8s.io/kustomize/api/types"
@@ -39,6 +41,7 @@ func TestFieldOrder(t *testing.T) {
 		"Generators",
 		"Transformers",
 		"Inventory",
+		"Components",
 	}
 	actual := determineFieldOrder()
 	if len(expected) != len(actual) {
@@ -157,8 +160,8 @@ patchesStrategicMerge:
 	}
 	bytes, _ := fSys.ReadFile(mf.path)
 
-	if !reflect.DeepEqual(kustomizationContentWithComments, bytes) {
-		t.Fatal("written kustomization with comments is not the same as original one")
+	if diff := cmp.Diff(kustomizationContentWithComments, bytes); diff != "" {
+		t.Errorf("Mismatch (-expected, +actual):\n%s", diff)
 	}
 }
 
@@ -251,10 +254,8 @@ generatorOptions:
 	}
 	bytes, _ := fSys.ReadFile(mf.path)
 
-	if string(expected) != string(bytes) {
-		t.Fatalf(
-			"expected =\n%s\n\nactual =\n%s\n",
-			string(expected), string(bytes))
+	if diff := cmp.Diff(expected, bytes); diff != "" {
+		t.Errorf("Mismatch (-expected, +actual):\n%s", diff)
 	}
 }
 
@@ -289,10 +290,8 @@ kind: Kustomization
 	}
 	bytes, _ := fSys.ReadFile(mf.path)
 
-	if string(expected) != string(bytes) {
-		t.Fatalf(
-			"expected =\n%s\n\nactual =\n%s\n",
-			string(expected), string(bytes))
+	if diff := cmp.Diff(expected, bytes); diff != "" {
+		t.Errorf("Mismatch (-expected, +actual):\n%s", diff)
 	}
 }
 
@@ -334,9 +333,25 @@ kind: Kustomization
 	}
 	bytes, _ := fSys.ReadFile(mf.path)
 
-	if string(expected) != string(bytes) {
-		t.Fatalf(
-			"expected =\n%s\n\nactual =\n%s\n",
-			string(expected), string(bytes))
+	if diff := cmp.Diff(expected, bytes); diff != "" {
+		t.Errorf("Mismatch (-expected, +actual):\n%s", diff)
+	}
+}
+
+func TestUnknownFieldInKustomization(t *testing.T) {
+	kContent := []byte(`
+foo:
+  bar
+`)
+	fSys := filesys.MakeFsInMemory()
+	testutils_test.WriteTestKustomizationWith(fSys, kContent)
+	mf, err := NewKustomizationFile(fSys)
+	if err != nil {
+		t.Fatalf("Unexpected Error: %v", err)
+	}
+
+	_, err = mf.Read()
+	if err == nil || err.Error() != "json: unknown field \"foo\"" {
+		t.Fatalf("Expect an unknown field error but got: %v", err)
 	}
 }

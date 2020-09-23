@@ -844,8 +844,7 @@ spec:
         - -namespace=${POD_NAMESPACE}
         - -certs-dir=/cockroach-certs
         - -type=node
-        - -addresses=localhost,127.0.0.1,${POD_IP},$(hostname -f),$(hostname -f|cut
-          -f 1-2 -d '.'),dev-base-cockroachdb-public
+        - -addresses=localhost,127.0.0.1,${POD_IP},$(hostname -f),$(hostname -f|cut -f 1-2 -d '.'),dev-base-cockroachdb-public
         - -symlink-ca-from=/var/run/secrets/kubernetes.io/serviceaccount/ca.crt
         env:
         - name: POD_IP
@@ -896,7 +895,7 @@ spec:
           - command:
             - echo
             - dev-base-cockroachdb
-            - dev-base-test-config-map-b2g2dmd64b
+            - dev-base-test-config-map-6b85g79g7g
             env:
             - name: CDB_PUBLIC_SVC
               value: dev-base-cockroachdb-public
@@ -922,7 +921,7 @@ data:
   foo: bar
 kind: ConfigMap
 metadata:
-  name: dev-base-test-config-map-b2g2dmd64b
+  name: dev-base-test-config-map-6b85g79g7g
 `)
 }
 

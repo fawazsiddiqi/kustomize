@@ -4,165 +4,186 @@
 package yaml
 
 import (
-	"strings"
+	"reflect"
 	"testing"
-
-	"github.com/stretchr/testify/assert"
 )
 
-// Test that non-UTF8 characters in comments don't cause failures
-func TestRNode_GetMeta_UTF16(t *testing.T) {
-	sr, err := Parse(`apiVersion: rbac.istio.io/v1alpha1
-kind: ServiceRole
-metadata:
-  name: wildcard
-  namespace: default
-  # If set to [“*”], it refers to all services in the namespace
-  annotations:
-    foo: bar
-spec:
-  rules:
-    # There is one service in default namespace, should not result in a validation error
-    # If set to [“*”], it refers to all services in the namespace
-    - services: ["*"]
-      methods: ["GET", "HEAD"]
-`)
-	if !assert.NoError(t, err) {
-		t.FailNow()
+func TestCopyYNode(t *testing.T) {
+	ynSub1 := Node{
+		Kind: 100,
 	}
-	actual, err := sr.GetMeta()
-	if !assert.NoError(t, err) {
-		t.FailNow()
+	ynSub2 := Node{
+		Kind: 200,
 	}
-
-	expected := ResourceMeta{
-		APIVersion: "rbac.istio.io/v1alpha1",
-		Kind:       "ServiceRole",
-		ObjectMeta: ObjectMeta{
-			Name:        "wildcard",
-			Namespace:   "default",
-			Annotations: map[string]string{"foo": "bar"},
-		},
+	ynSub3 := Node{
+		Kind: 300,
 	}
-	if !assert.Equal(t, expected, actual) {
-		t.FailNow()
+	yn := Node{
+		Kind:        5000,
+		Style:       6000,
+		Tag:         "red",
+		Value:       "green",
+		Anchor:      "blue",
+		Alias:       &ynSub3,
+		Content:     []*Node{&ynSub1, &ynSub2},
+		HeadComment: "apple",
+		LineComment: "peach",
+		FootComment: "banana",
+		Line:        7000,
+		Column:      8000,
+	}
+	ynAddr := &yn
+	if !reflect.DeepEqual(&yn, ynAddr) {
+		t.Fatalf("truly %v should equal %v", &yn, ynAddr)
+	}
+	ynC := CopyYNode(&yn)
+	if !reflect.DeepEqual(yn.Content, ynC.Content) {
+		t.Fatalf("copy content %v is not deep equal to %v", ynC, yn)
+	}
+	if !reflect.DeepEqual(&yn, ynC) {
+		t.Fatalf("\noriginal: %v\n    copy: %v\nShould be equal.", yn, ynC)
+	}
+	tmp := yn.Content[0].Kind
+	yn.Content[0].Kind = 666
+	if reflect.DeepEqual(&yn, ynC) {
+		t.Fatalf("changing component should break equality")
+	}
+	yn.Content[0].Kind = tmp
+	if !reflect.DeepEqual(&yn, ynC) {
+		t.Fatalf("should be okay now")
+	}
+	yn.Tag = "Different"
+	if yn.Tag == ynC.Tag {
+		t.Fatalf("field aliased!")
 	}
 }
 
-func TestRNode_UnmarshalJSON(t *testing.T) {
+func TestIsYNodeTaggedNull(t *testing.T) {
+	if IsYNodeTaggedNull(nil) {
+		t.Fatalf("nil cannot be tagged null")
+	}
+	if IsYNodeTaggedNull(&Node{}) {
+		t.Fatalf("untagged node is not tagged")
+	}
+	if IsYNodeTaggedNull(&Node{Tag: NodeTagFloat}) {
+		t.Fatalf("float tagged node is not tagged")
+	}
+	if !IsYNodeTaggedNull(&Node{Tag: NodeTagNull}) {
+		t.Fatalf("tagged node is tagged")
+	}
+}
+
+func TestIsYNodeEmptyMap(t *testing.T) {
+	if IsYNodeEmptyMap(nil) {
+		t.Fatalf("nil cannot be a map")
+	}
+	if IsYNodeEmptyMap(&Node{}) {
+		t.Fatalf("raw node is not a map")
+	}
+	if IsYNodeEmptyMap(&Node{Kind: SequenceNode}) {
+		t.Fatalf("seq node is not a map")
+	}
+	n := &Node{Kind: MappingNode}
+	if !IsYNodeEmptyMap(n) {
+		t.Fatalf("empty mapping node is an empty mapping node")
+	}
+	n.Content = append(n.Content, &Node{Kind: SequenceNode})
+	if IsYNodeEmptyMap(n) {
+		t.Fatalf("a node with content isn't empty")
+	}
+}
+
+func TestIsYNodeEmptySeq(t *testing.T) {
+	if IsYNodeEmptySeq(nil) {
+		t.Fatalf("nil cannot be a map")
+	}
+	if IsYNodeEmptySeq(&Node{}) {
+		t.Fatalf("raw node is not a map")
+	}
+	if IsYNodeEmptySeq(&Node{Kind: MappingNode}) {
+		t.Fatalf("map node is not a sequence")
+	}
+	n := &Node{Kind: SequenceNode}
+	if !IsYNodeEmptySeq(n) {
+		t.Fatalf("empty sequence node is an empty sequence node")
+	}
+	n.Content = append(n.Content, &Node{Kind: MappingNode})
+	if IsYNodeEmptySeq(n) {
+		t.Fatalf("a node with content isn't empty")
+	}
+}
+
+func TestIsNameSpaceable1(t *testing.T) {
 	testCases := []struct {
-		testName string
-		input    string
-		output   string
+		tm              TypeMeta
+		isNamespaceable bool
 	}{
 		{
-			testName: "simple document",
-			input:    `{"hello":"world"}`,
-			output:   `hello: world`,
+			tm:              TypeMeta{Kind: "ClusterRole"},
+			isNamespaceable: false,
 		},
 		{
-			testName: "nested structure",
-			input: `
-{
-  "apiVersion": "apps/v1",
-  "kind": "Deployment",
-  "metadata": {
-    "name": "my-deployment",
-    "namespace": "default"
-  }
+			tm:              TypeMeta{Kind: "Namespace"},
+			isNamespaceable: false,
+		},
+		{
+			tm:              TypeMeta{Kind: "Deployment"},
+			isNamespaceable: true,
+		},
+	}
+	for _, tc := range testCases {
+		if tc.tm.IsNamespaceable() {
+			if !tc.isNamespaceable {
+				t.Fatalf("%v is namespaceable, but shouldn't be", tc.tm)
+			}
+		} else {
+			if tc.isNamespaceable {
+				t.Fatalf("%v is not namespaceable, but should be", tc.tm)
+			}
+		}
+	}
 }
-`,
-			output: `
-apiVersion: apps/v1
+
+func TestIsNameSpaceable2(t *testing.T) {
+	testCases := []struct {
+		yammy           string
+		isNamespaceable bool
+	}{
+		{
+			yammy: `apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: my-deployment
-  namespace: default
+  name: bilbo
+  namespace: middleEarth
 `,
-		},
-	}
-
-	for i := range testCases {
-		tc := testCases[i]
-		t.Run(tc.testName, func(t *testing.T) {
-			instance := &RNode{}
-			err := instance.UnmarshalJSON([]byte(tc.input))
-			if !assert.NoError(t, err) {
-				t.FailNow()
-			}
-
-			actual, err := instance.String()
-			if !assert.NoError(t, err) {
-				t.FailNow()
-			}
-
-			if !assert.Equal(t,
-				strings.TrimSpace(tc.output), strings.TrimSpace(actual)) {
-				t.FailNow()
-			}
-		})
-	}
-}
-
-func TestRNode_MarshalJSON(t *testing.T) {
-	tests := []struct {
-		name string
-		ydoc string
-		want string
-	}{
-		{
-			name: "object",
-			ydoc: `
-hello: world
-`,
-			want: `{"hello":"world"}`,
+			isNamespaceable: true,
 		},
 		{
-			name: "array",
-			ydoc: `
-- name: s1
-- name: s2
+			yammy: `apiVersion: v1
+kind: Namespace
+metadata:
+  name: middleEarth
 `,
-			want: `[{"name":"s1"},{"name":"s2"}]`,
+			isNamespaceable: false,
 		},
 	}
-	for idx := range tests {
-		tt := tests[idx]
-		t.Run(tt.name, func(t *testing.T) {
-			instance, err := Parse(tt.ydoc)
-			if !assert.NoError(t, err) {
-				t.FailNow()
+	for _, tc := range testCases {
+		rn, err := Parse(tc.yammy)
+		if err != nil {
+			t.Fatalf("unexpected parse error %v from json: %s", err, tc.yammy)
+		}
+		meta, err := rn.GetMeta()
+		if err != nil {
+			t.Fatalf("unexpected meta error %v", err)
+		}
+		if meta.IsNamespaceable() {
+			if !tc.isNamespaceable {
+				t.Fatalf("%v is namespaceable, but shouldn't be", meta)
 			}
-
-			actual, err := instance.MarshalJSON()
-			if !assert.NoError(t, err) {
-				t.FailNow()
+		} else {
+			if tc.isNamespaceable {
+				t.Fatalf("%v is not namespaceable, but should be", meta)
 			}
-
-			if !assert.Equal(t,
-				strings.TrimSpace(tt.want), strings.TrimSpace(string(actual))) {
-				t.FailNow()
-			}
-		})
+		}
 	}
-}
-
-func TestConvertJSONToYamlNode(t *testing.T) {
-	inputJSON := `{"type": "string", "maxLength": 15, "enum": ["allowedValue1", "allowedValue2"]}`
-	expected := `enum:
-- allowedValue1
-- allowedValue2
-maxLength: 15
-type: string
-`
-
-	node, err := ConvertJSONToYamlNode(inputJSON)
-	if !assert.NoError(t, err) {
-		t.FailNow()
-	}
-	actual, err := node.String()
-	if !assert.NoError(t, err) {
-		t.FailNow()
-	}
-	assert.Equal(t, expected, actual)
 }

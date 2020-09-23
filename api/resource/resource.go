@@ -1,7 +1,7 @@
 // Copyright 2019 The Kubernetes Authors.
 // SPDX-License-Identifier: Apache-2.0
 
-// Package resource implements representations of k8s API resources as "unstructured" objects.
+// Package resource implements representations of k8s API resources.
 package resource
 
 import (
@@ -14,10 +14,11 @@ import (
 	"sigs.k8s.io/yaml"
 )
 
-// Resource is map representation of a Kubernetes API resource object
-// paired with a GenerationBehavior.
+// Resource is a representation of a Kubernetes Resource Model (KRM) object
+// paired with metadata used by kustomize.
+// For more history, see sigs.k8s.io/kustomize/api/ifc.Unstructured
 type Resource struct {
-	ifc.Kunstructured
+	kunStr       ifc.Kunstructured
 	originalName string
 	originalNs   string
 	options      *types.GenArgs
@@ -25,6 +26,86 @@ type Resource struct {
 	refVarNames  []string
 	namePrefixes []string
 	nameSuffixes []string
+}
+
+func (r *Resource) ResetPrimaryData(incoming *Resource) {
+	r.kunStr = incoming.Copy()
+}
+
+func (r *Resource) GetAnnotations() map[string]string {
+	return r.kunStr.GetAnnotations()
+}
+
+func (r *Resource) Copy() ifc.Kunstructured {
+	return r.kunStr.Copy()
+}
+
+func (r *Resource) GetFieldValue(f string) (interface{}, error) {
+	return r.kunStr.GetFieldValue(f)
+}
+
+func (r *Resource) GetGvk() resid.Gvk {
+	return r.kunStr.GetGvk()
+}
+
+func (r *Resource) GetKind() string {
+	return r.kunStr.GetKind()
+}
+
+func (r *Resource) GetLabels() map[string]string {
+	return r.kunStr.GetLabels()
+}
+
+func (r *Resource) GetName() string {
+	return r.kunStr.GetName()
+}
+
+func (r *Resource) GetSlice(p string) ([]interface{}, error) {
+	return r.kunStr.GetSlice(p)
+}
+
+func (r *Resource) GetString(p string) (string, error) {
+	return r.kunStr.GetString(p)
+}
+
+func (r *Resource) Map() map[string]interface{} {
+	return r.kunStr.Map()
+}
+
+func (r *Resource) MarshalJSON() ([]byte, error) {
+	return r.kunStr.MarshalJSON()
+}
+
+func (r *Resource) MatchesLabelSelector(selector string) (bool, error) {
+	return r.kunStr.MatchesLabelSelector(selector)
+}
+
+func (r *Resource) MatchesAnnotationSelector(selector string) (bool, error) {
+	return r.kunStr.MatchesAnnotationSelector(selector)
+}
+
+func (r *Resource) SetAnnotations(m map[string]string) {
+	r.kunStr.SetAnnotations(m)
+}
+
+func (r *Resource) SetGvk(gvk resid.Gvk) {
+	r.kunStr.SetGvk(gvk)
+}
+
+func (r *Resource) SetLabels(m map[string]string) {
+	r.kunStr.SetLabels(m)
+}
+
+func (r *Resource) SetName(n string) {
+	r.kunStr.SetName(n)
+}
+
+func (r *Resource) SetNamespace(n string) {
+	r.kunStr.SetNamespace(n)
+}
+
+func (r *Resource) UnmarshalJSON(s []byte) error {
+	return r.kunStr.UnmarshalJSON(s)
 }
 
 // ResCtx is an interface describing the contextual added
@@ -46,7 +127,7 @@ type ResCtxMatcher func(ResCtx) bool
 // DeepCopy returns a new copy of resource
 func (r *Resource) DeepCopy() *Resource {
 	rc := &Resource{
-		Kunstructured: r.Kunstructured.Copy(),
+		kunStr: r.Copy(),
 	}
 	rc.copyOtherFields(r)
 	return rc
@@ -55,8 +136,7 @@ func (r *Resource) DeepCopy() *Resource {
 // Replace performs replace with other resource.
 func (r *Resource) Replace(other *Resource) {
 	r.SetLabels(mergeStringMaps(other.GetLabels(), r.GetLabels()))
-	r.SetAnnotations(
-		mergeStringMaps(other.GetAnnotations(), r.GetAnnotations()))
+	r.SetAnnotations(mergeStringMaps(other.GetAnnotations(), r.GetAnnotations()))
 	r.SetName(other.GetName())
 	r.SetNamespace(other.GetNamespace())
 	r.copyOtherFields(other)
@@ -74,7 +154,7 @@ func (r *Resource) copyOtherFields(other *Resource) {
 
 func (r *Resource) Equals(o *Resource) bool {
 	return r.ReferencesEqual(o) &&
-		reflect.DeepEqual(r.Kunstructured, o.Kunstructured)
+		reflect.DeepEqual(r.kunStr, o.kunStr)
 }
 
 func (r *Resource) ReferencesEqual(o *Resource) bool {
@@ -93,7 +173,7 @@ func (r *Resource) ReferencesEqual(o *Resource) bool {
 }
 
 func (r *Resource) KunstructEqual(o *Resource) bool {
-	return reflect.DeepEqual(r.Kunstructured, o.Kunstructured)
+	return reflect.DeepEqual(r.kunStr, o.kunStr)
 }
 
 // Merge performs merge with other resource.
@@ -195,12 +275,6 @@ func (r *Resource) OutermostPrefixSuffixEquals(o ResCtx) bool {
 // nameprefix slice and not the first.
 func (r *Resource) PrefixesSuffixesEquals(o ResCtx) bool {
 	return sameEndingSubarray(r.GetNamePrefixes(), o.GetNamePrefixes()) && sameEndingSubarray(r.GetNameSuffixes(), o.GetNameSuffixes())
-}
-
-// This is used to compute if a referrer could potentially be impacted
-// by the change of name of a referral.
-func (r *Resource) InSameKustomizeCtx(rctxm ResCtxMatcher) bool {
-	return rctxm(r)
 }
 
 func (r *Resource) GetOriginalName() string {
