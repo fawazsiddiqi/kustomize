@@ -5,6 +5,9 @@ package resid
 
 import (
 	"strings"
+
+	"sigs.k8s.io/kustomize/kyaml/openapi"
+	"sigs.k8s.io/kustomize/kyaml/yaml"
 )
 
 // Gvk identifies a Kubernetes API type.
@@ -33,6 +36,14 @@ func ParseGroupVersion(apiVersion string) (group, version string) {
 // GvkFromString makes a Gvk from the output of Gvk.String().
 func GvkFromString(s string) Gvk {
 	values := strings.Split(s, fieldSep)
+	if len(values) != 3 {
+		// ...then the string didn't come from Gvk.String().
+		return Gvk{
+			Group:   noGroup,
+			Version: noVersion,
+			Kind:    noKind,
+		}
+	}
 	g := values[0]
 	if g == noGroup {
 		g = ""
@@ -75,6 +86,30 @@ func (x Gvk) String() string {
 		k = noKind
 	}
 	return strings.Join([]string{g, v, k}, fieldSep)
+}
+
+// ApiVersion returns the combination of Group and Version
+func (x Gvk) ApiVersion() string {
+	if x.Group == "" {
+		return x.Version
+	}
+	return x.Group + "/" + x.Version
+}
+
+// StringWoEmptyField returns a string representation of the GVK. Non-exist
+// fields will be omitted.
+func (x Gvk) StringWoEmptyField() string {
+	var s []string
+	if x.Group != "" {
+		s = append(s, x.Group)
+	}
+	if x.Version != "" {
+		s = append(s, x.Version)
+	}
+	if x.Kind != "" {
+		s = append(s, x.Kind)
+	}
+	return strings.Join(s, fieldSep)
 }
 
 // Equals returns true if the Gvk's have equal fields.
@@ -172,39 +207,26 @@ func (x Gvk) IsSelected(selector *Gvk) bool {
 	return true
 }
 
-var notNamespaceableKinds = []string{
-	"APIService",
-	"CSIDriver",
-	"CSINode",
-	"CertificateSigningRequest",
-	"Cluster",
-	"ClusterRole",
-	"ClusterRoleBinding",
-	"ComponentStatus",
-	"CustomResourceDefinition",
-	"MutatingWebhookConfiguration",
-	"Namespace",
-	"Node",
-	"PersistentVolume",
-	"PodSecurityPolicy",
-	"PriorityClass",
-	"RuntimeClass",
-	"SelfSubjectAccessReview",
-	"SelfSubjectRulesReview",
-	"StorageClass",
-	"SubjectAccessReview",
-	"TokenReview",
-	"ValidatingWebhookConfiguration",
-	"VolumeAttachment",
+// toKyamlTypeMeta returns a yaml.TypeMeta from x's information.
+func (x Gvk) toKyamlTypeMeta() yaml.TypeMeta {
+	var apiVersion strings.Builder
+	if x.Group != "" {
+		apiVersion.WriteString(x.Group)
+		apiVersion.WriteString("/")
+	}
+	apiVersion.WriteString(x.Version)
+	return yaml.TypeMeta{
+		APIVersion: apiVersion.String(),
+		Kind:       x.Kind,
+	}
 }
 
-// IsNamespaceableKind returns true if x is a namespaceable Gvk
+// IsNamespaceableKind returns true if x is a namespaceable Gvk,
+// e.g. instances of Pod and Deployment are namespaceable,
+// but instances of Node and Namespace are not namespaceable.
+// Alternative name for this method: IsNotClusterScoped.
 // Implements https://kubernetes.io/docs/concepts/overview/working-with-objects/namespaces/#not-all-objects-are-in-a-namespace
 func (x Gvk) IsNamespaceableKind() bool {
-	for _, k := range notNamespaceableKinds {
-		if k == x.Kind {
-			return false
-		}
-	}
-	return true
+	isNamespaceScoped, found := openapi.IsNamespaceScoped(x.toKyamlTypeMeta())
+	return !found || isNamespaceScoped
 }
