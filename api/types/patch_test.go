@@ -3,13 +3,13 @@ package types_test
 import (
 	"testing"
 
-	"sigs.k8s.io/kustomize/api/resid"
 	. "sigs.k8s.io/kustomize/api/types"
+	"sigs.k8s.io/kustomize/kyaml/resid"
 )
 
 func TestPatchEquals(t *testing.T) {
 	selector := Selector{
-		KrmId: KrmId{
+		ResId: resid.ResId{
 			Gvk: resid.Gvk{
 				Group:   "group",
 				Version: "version",
@@ -40,7 +40,7 @@ func TestPatchEquals(t *testing.T) {
 				Path:  "foo",
 				Patch: "bar",
 				Target: &Selector{
-					KrmId: KrmId{
+					ResId: resid.ResId{
 						Gvk: resid.Gvk{
 							Group:   "group",
 							Version: "version",
@@ -57,7 +57,7 @@ func TestPatchEquals(t *testing.T) {
 				Path:  "foo",
 				Patch: "bar",
 				Target: &Selector{
-					KrmId: KrmId{
+					ResId: resid.ResId{
 						Gvk: resid.Gvk{
 							Group:   "group",
 							Version: "version",

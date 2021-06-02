@@ -7,6 +7,7 @@ import (
 	"io/ioutil"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -93,9 +94,18 @@ func (th *HarnessEnhanced) GetRoot() string {
 	return th.ldr.Root()
 }
 
+func (th *HarnessEnhanced) MkDir(path string) string {
+	dir := filepath.Join(th.ldr.Root(), path)
+	th.GetFSys().Mkdir(dir)
+	return dir
+}
+
 func (th *HarnessEnhanced) Reset() {
 	if th.shouldWipeLdrRoot {
-		if !strings.HasPrefix(th.ldr.Root(), os.TempDir()) {
+		root, _ := filepath.EvalSymlinks(th.ldr.Root())
+		tmpdir, _ := filepath.EvalSymlinks(os.TempDir())
+
+		if !strings.HasPrefix(root, tmpdir) {
 			// sanity check.
 			panic("something strange about th.ldr.Root() = " + th.ldr.Root())
 		}
